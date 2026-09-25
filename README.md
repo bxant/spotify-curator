@@ -10,7 +10,7 @@ The page shows your Spotify profile, a few library stats, and under **Your recom
 
 Click a card to open the playlist on its own page (`#/playlist/<key>`): big cover, reason, create controls, and the full track list with title, artist, album, year, and key and genres where known. **Back to recommendations** (or the browser's back button) returns to the grid with its sort, filters and scroll position as you left them; the page's address keeps the sort and filters (`#/?sort=decade&genre=rock`), so reloads keep them too.
 
-On a playlist's page, **×** removes a track from that suggestion before you create it. **Undo** brings it back, and removed tracks stay listed below the track list with **Restore**. Removals apply everywhere the suggestion appears (card, counts, filters, and **Create in Spotify**) and last for the browser tab's session, across Back, reload, **Refresh data** and different sets.
+On a playlist's page, **×** removes a track from that suggestion before you create it. Removed tracks stay listed below the track list, where **Restore** (or **Restore all**) brings them back. Removals apply everywhere the suggestion appears (card, counts, filters, and **Create in Spotify**) and last for the browser tab's session, across Back, reload, **Refresh data** and different sets.
 
 | Playlist | How it is picked |
 | --- | --- |

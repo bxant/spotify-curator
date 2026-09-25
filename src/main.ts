@@ -617,8 +617,6 @@ function createCuratorView(
       return { cur, item, signature: item ? trackSignature(item.playlist) : '' };
     };
     let shown = find();
-    /** The last removed track, offered for undo until the next edit. */
-    let undo: LikedTrack | undefined;
     const back = () => backToRecommendations(state.criteria);
     const edit = (change: () => void, focus: () => HTMLElement | null | undefined) => {
       change();
@@ -634,27 +632,18 @@ function createCuratorView(
         const i = tracks.findIndex((x) => x.id === t.id);
         const neighbour = tracks[i + 1] ?? tracks[i - 1];
         edit(
-          () => {
-            removedStore.remove(key, t.id);
-            undo = t;
-          },
-          () => (neighbour ? removeButton(neighbour.id) : app.querySelector<HTMLElement>('.toast button')),
+          () => removedStore.remove(key, t.id),
+          () => (neighbour ? removeButton(neighbour.id) : app.querySelector<HTMLElement>('.removed-tracks li button')),
         );
       },
       restore: (t) =>
         edit(
-          () => {
-            removedStore.restore(key, t.id);
-            if (undo?.id === t.id) undo = undefined;
-          },
+          () => removedStore.restore(key, t.id),
           () => removeButton(t.id),
         ),
       restoreAll: () =>
         edit(
-          () => {
-            removedStore.restoreAll(key);
-            undo = undefined;
-          },
+          () => removedStore.restoreAll(key),
           () => null,
         ),
     };
@@ -666,7 +655,6 @@ function createCuratorView(
         .removed(key)
         .map((id) => byId.get(id))
         .filter((t): t is LikedTrack => !!t);
-      if (undo && !removed.some((t) => t.id === undo?.id)) undo = undefined;
       show(
         topBar(auth),
         item
@@ -674,7 +662,7 @@ function createCuratorView(
               client,
               item,
               { artistGenres: cur.artistGenres, trackKeys: state.keys, kept: cur.keptKeys.has(key) },
-              { removed, undo, ...editing },
+              { removed, ...editing },
               back,
             )
           : missingPlaylistPage(state, back),
@@ -1259,7 +1247,7 @@ function playlistPage(
   client: SpotifyClient,
   { playlist: p, facets }: Browsable,
   known: { artistGenres: Record<string, string[]>; trackKeys: Record<string, TrackKey | null>; kept: boolean },
-  editing: TrackEditing & { removed: LikedTrack[]; undo?: LikedTrack },
+  editing: TrackEditing & { removed: LikedTrack[] },
   onBack: () => void,
 ): HTMLElement {
   return h(
@@ -1290,7 +1278,6 @@ function playlistPage(
       ? trackTable(p.tracks, known, editing.remove)
       : h('p', { class: 'muted empty' }, 'You removed every track from this playlist. Restore some below to create it.'),
     editing.removed.length > 0 && removedTracks(editing),
-    editing.undo && undoToast(editing.undo, editing.restore),
   );
 }
 
@@ -1318,27 +1305,6 @@ function removedTracks(editing: TrackEditing & { removed: LikedTrack[] }): HTMLE
       ),
     ),
   );
-}
-
-const TOAST_MS = 10_000;
-
-/** Undo for the last removal; it hides after a while (never under focus), and the removed list stays. */
-function undoToast(t: LikedTrack, restore: (t: LikedTrack) => void): HTMLElement {
-  const el = h(
-    'div',
-    { class: 'toast', role: 'status' },
-    h('span', {}, 'Removed “', h('strong', {}, t.name), '” from this playlist.'),
-    button('Undo', { class: 'small' }, () => restore(t)),
-  );
-  let expired = false;
-  setTimeout(() => {
-    expired = true;
-    if (!el.contains(document.activeElement)) el.remove();
-  }, TOAST_MS);
-  el.addEventListener('focusout', () => {
-    if (expired) el.remove();
-  });
-  return el;
 }
 
 function missingPlaylistPage(state: CuratorState, onBack: () => void): HTMLElement {
