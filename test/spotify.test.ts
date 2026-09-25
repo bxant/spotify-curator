@@ -74,8 +74,17 @@ describe('SpotifyClient.getLikedTracks', () => {
       addedAt: '2024-02-03T04:05:06Z',
       trackNumber: 3,
       artists: [{ id: 'artist-abc', name: 'Artist abc' }],
-      album: { id: 'album-abc', releaseDate: '2011-06-01', totalTracks: 11, imageUrl: 'https://i.scdn.co/image/abc-64' },
+      album: {
+        id: 'album-abc',
+        releaseDate: '2011-06-01',
+        totalTracks: 11,
+        imageUrl: 'https://i.scdn.co/image/abc-64',
+        coverUrl: 'https://i.scdn.co/image/abc-300',
+      },
     });
+    expect(liked?.isrc).toBeUndefined();
+    const withIsrc = toLikedTrack({ added_at: '', track: rawTrack('i', { external_ids: { isrc: 'gbaye0601498' } }) as never });
+    expect(withIsrc?.isrc).toBe('GBAYE0601498');
     expect(toLikedTrack({ added_at: '', track: rawTrack('loc', { is_local: true, id: null }) as never })).toBeNull();
     expect(toLikedTrack({ added_at: '', track: null })).toBeNull();
   });

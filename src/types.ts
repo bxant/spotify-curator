@@ -13,7 +13,10 @@ export interface AlbumInfo {
   releaseDate: string;
   albumType: string;
   totalTracks: number;
+  /** Small cover (at least 64px) for track rows. */
   imageUrl?: string;
+  /** Larger cover (at least 300px) for playlist artwork. */
+  coverUrl?: string;
 }
 
 export interface LikedTrack {
@@ -27,6 +30,8 @@ export interface LikedTrack {
   trackNumber: number;
   /** ISO timestamp of when the track was added to Liked Songs. */
   addedAt: string;
+  /** International Standard Recording Code, when Spotify has one (used to match MusicBrainz). */
+  isrc?: string;
 }
 
 /** Minimal reference to a track that shows up in listening history. */
@@ -55,10 +60,10 @@ export interface TrackKey {
   mode: 0 | 1;
 }
 
-export type PlaylistKind = 'favorites' | 'rediscover' | 'best-of-albums' | 'genre' | 'key' | 'era';
+export type PlaylistKind = 'favorites' | 'rediscover' | 'best-of-albums' | 'artist' | 'genre' | 'key' | 'era';
 
 export interface CuratedPlaylist {
-  /** Stable identifier, e.g. "favorites", "genre:indie rock" or "key:9:0". */
+  /** Stable identifier, e.g. "favorites", "artist:<id>", "genre:indie rock" or "key:9:0". */
   key: string;
   kind: PlaylistKind;
   name: string;
