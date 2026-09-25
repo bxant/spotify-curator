@@ -1,0 +1,30 @@
+// Small HTTP helpers shared by the Spotify and ReccoBeats clients.
+
+/** Parses Retry-After (seconds or HTTP date); defaults to 1s when missing. */
+export function retryAfterMs(header: string | null, now = Date.now()): number {
+  if (!header) return 1000;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(header);
+  return Number.isNaN(date) ? 1000 : Math.max(0, date - now);
+}
+
+/** Runs `fn` over items with at most `limit` in flight; results keep input order. */
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+export const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
