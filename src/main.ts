@@ -25,6 +25,8 @@ const app = document.getElementById('app') as HTMLElement;
 const cache = new SessionCache();
 /** MusicBrainz matches outlive the tab: they are public data and slow to look up again. */
 const lookupCache = browserCache();
+/** One client for every lookup, so its throttle (and any 503 slowdown) carries across runs. */
+const musicBrainz = new MusicBrainzClient();
 /** Redraws the create controls of the card currently on the page for a playlist key. */
 const createControlRefreshers = new Map<string, () => void>();
 const createdStore = new CreatedStore(cache, (key) => {
@@ -338,14 +340,14 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
     run.etaSeconds = Math.round(run.total * MB_SECONDS_PER_ARTIST);
     view.render();
     void loadMusicBrainz(
-      new MusicBrainzClient(),
+      musicBrainz,
       library.liked,
       lookupCache,
       (progress, data) => {
         Object.assign(run, progress);
         state.musicBrainz = data;
-        // New genres change the suggestions; redraw them as each batch lands.
-        view.render();
+        // New genres change the suggestions; refresh them in place as each batch lands.
+        view.update();
       },
       runSignal,
     ).then((result) => {
@@ -413,28 +415,37 @@ function createCuratorView(
       (state.mbRun.etaSeconds ? ` · about ${duration(state.mbRun.etaSeconds)} left` : '');
   };
 
+  /** Refreshes the suggestions of the current page in place; set by each full render. */
+  let refresh = () => {};
+
   const render = () => {
     if (!isCurrent()) return;
+    const curateNow = () => {
+      const mbGenres = musicBrainzGenres(state.musicBrainz);
+      const result = curate(state.library.liked, state.library.history, {
+        now: new Date(),
+        artistGenres: state.genres,
+        musicBrainzGenres: mbGenres,
+        trackKeys: state.keys,
+        variant: state.variant,
+      });
+      const shown = withKept(state.kept, result.playlists);
+      const facetInputs = { artistGenres: mergeGenres(state.genres, mbGenres), trackKeys: state.keys };
+      const items: Browsable[] = shown.map((playlist) => ({ playlist, facets: playlistFacets(playlist, facetInputs) }));
+      return { result, shown, items, keptKeys: new Set(state.kept.map((p) => p.key)) };
+    };
+    let cur = curateNow();
+
     // Keep expanded track lists open across re-renders.
-    const open = new Set(
-      [...app.querySelectorAll<HTMLDetailsElement>('details[open]')].map((d) => d.dataset.key ?? ''),
-    );
-    const mbGenres = musicBrainzGenres(state.musicBrainz);
-    const result = curate(state.library.liked, state.library.history, {
-      now: new Date(),
-      artistGenres: state.genres,
-      musicBrainzGenres: mbGenres,
-      trackKeys: state.keys,
-      variant: state.variant,
-    });
-    const shown = withKept(state.kept, result.playlists);
-    const facetInputs = { artistGenres: mergeGenres(state.genres, mbGenres), trackKeys: state.keys };
-    const items: Browsable[] = shown.map((playlist) => ({ playlist, facets: playlistFacets(playlist, facetInputs) }));
-    const keptKeys = new Set(state.kept.map((p) => p.key));
+    const openKeys = (root: ParentNode) =>
+      new Set([...root.querySelectorAll<HTMLDetailsElement>('details[open]')].map((d) => d.dataset.key ?? ''));
+    const wasOpen = openKeys(app);
 
     const grid = h('div', { class: 'grid' });
     const count = h('p', { class: 'muted small', role: 'status' });
     const renderGrid = () => {
+      const { items, keptKeys } = cur;
+      const open = grid.hasChildNodes() ? openKeys(grid) : wasOpen;
       const visible = browse(items, state.criteria);
       count.textContent =
         visible.length === items.length
@@ -447,12 +458,15 @@ function createCuratorView(
       );
     };
 
+    let heroEl = hero(state, cur.result);
+    const bar = browseBar(state, renderGrid);
+    bar.setItems(cur.items);
     renderProgress();
     show(
       topBar(auth),
-      hero(state, result),
+      heroEl,
       createdList(),
-      enrichSection(state, result, live, actions),
+      enrichSection(state, cur.result, live, actions),
       h(
         'section',
         { class: 'suggestions', 'aria-labelledby': 'suggestions-title' },
@@ -460,23 +474,41 @@ function createCuratorView(
           'div',
           { class: 'section-head' },
           h('div', {}, h('h2', { id: 'suggestions-title' }, state.variant === 0 ? 'Suggested playlists' : `Suggested playlists · set ${state.variant + 1}`), count),
-          items.length > 0 &&
-            button([icon('shuffle'), 'Curate a different set'], { class: 'secondary' }, () =>
+          cur.items.length > 0 &&
+            button([icon('shuffle'), 'Curate a different set'], { class: 'secondary' }, () => {
+              const { shown, keptKeys } = cur;
               recurateDialog(shown, keptKeys, (keep) => {
                 state.kept = keepSelected(shown, keep);
                 state.variant++;
                 render();
-              }),
-            ),
+              });
+            }),
         ),
-        browseBar(items, state, renderGrid),
+        bar.el,
         grid,
       ),
     );
     renderGrid();
+
+    refresh = () => {
+      cur = curateNow();
+      const next = hero(state, cur.result);
+      heroEl.replaceWith(next);
+      heroEl = next;
+      bar.setItems(cur.items);
+      // Leave the cards alone while one has focus; the next refresh or render catches up.
+      if (!grid.contains(document.activeElement)) renderGrid();
+    };
   };
 
-  return { render, renderProgress };
+  /** Mid-lookup redraw: progress and suggestions only, so open selects and focus survive. */
+  const update = () => {
+    if (!isCurrent()) return;
+    renderProgress();
+    refresh();
+  };
+
+  return { render, renderProgress, update };
 }
 
 function setBar(bar: HTMLProgressElement, run: LookupRun) {
@@ -737,31 +769,36 @@ const SORT_LABEL: Record<SortOrder, string> = {
 
 const SIZE_OPTIONS = [25, 50, 100];
 
-function browseBar(items: Browsable[], state: CuratorState, onChange: () => void): HTMLElement {
-  const options = filterOptions(items);
+function browseBar(state: CuratorState, onChange: () => void): { el: HTMLElement; setItems: (items: Browsable[]) => void } {
   const c = state.criteria;
-  // Drop filters whose value no longer matches any suggestion (e.g. after a different set).
-  if (c.kind && !options.kinds.some((o) => o.id === c.kind)) c.kind = '';
-  if (c.decade != null && !options.decades.some((o) => o.id === c.decade)) c.decade = null;
-  if (c.genre && !options.genres.some((o) => o.id === c.genre)) c.genre = '';
-  if (c.key && !options.keys.some((o) => o.id === c.key)) c.key = '';
-  if (c.artist && !options.artists.some((o) => o.id === c.artist)) c.artist = '';
+  let options = filterOptions([]);
 
+  const fills: (() => void)[] = [];
+  const field = (label: string, select: HTMLSelectElement, hint?: () => string | undefined) => {
+    const hintEl = h('span', { class: 'hint' });
+    if (hint) fills.push(() => {
+      hintEl.textContent = hint() ?? '';
+      hintEl.hidden = !hintEl.textContent;
+    });
+    return h('label', { class: 'field' }, h('span', {}, label), select, hint && hintEl);
+  };
   const controls: HTMLSelectElement[] = [];
-  const field = (label: string, select: HTMLSelectElement, hint?: string) =>
-    h('label', { class: 'field' }, h('span', {}, label), select, hint && h('span', { class: 'hint' }, hint));
   const select = (
     name: string,
-    choices: { value: string; label: string }[],
-    value: string,
+    choices: () => { value: string; label: string }[],
+    value: () => string,
     set: (v: string) => void,
     anyLabel?: string,
   ): HTMLSelectElement => {
     const el = h('select', { name }) as HTMLSelectElement;
-    if (anyLabel) el.append(new Option(anyLabel, ''));
-    for (const o of choices) el.append(new Option(o.label, o.value));
-    el.value = value;
-    el.disabled = anyLabel !== undefined && choices.length === 0;
+    fills.push(() => {
+      // Rebuilding the options of the focused select would close it mid-choice.
+      if (el === document.activeElement) return;
+      const list = choices();
+      el.replaceChildren(...(anyLabel ? [new Option(anyLabel, '')] : []), ...list.map((o) => new Option(o.label, o.value)));
+      el.value = value();
+      el.disabled = anyLabel !== undefined && list.length === 0;
+    });
     el.addEventListener('change', () => {
       set(el.value);
       clear.hidden = !filtering();
@@ -779,48 +816,60 @@ function browseBar(items: Browsable[], state: CuratorState, onChange: () => void
     clear.hidden = true;
     onChange();
   });
-  clear.hidden = !filtering();
 
-  return h(
+  const el = h(
     'div',
     { class: 'browse', role: 'group', 'aria-label': 'Sort and filter suggestions' },
     field(
       'Sort by',
       select(
         'sort',
-        (Object.keys(SORT_LABEL) as SortOrder[]).map((s) => ({ value: s, label: SORT_LABEL[s] })),
-        c.sort,
+        () => (Object.keys(SORT_LABEL) as SortOrder[]).map((s) => ({ value: s, label: SORT_LABEL[s] })),
+        () => c.sort,
         (v) => (c.sort = v as SortOrder),
       ),
     ),
     field(
       'Type',
-      select('kind', options.kinds.map((o) => ({ value: o.id, label: KIND_LABEL[o.id] + n(o.count) })), c.kind ?? '', (v) => (c.kind = v as PlaylistKind | ''), 'All types'),
+      select('kind', () => options.kinds.map((o) => ({ value: o.id, label: KIND_LABEL[o.id] + n(o.count) })), () => c.kind ?? '', (v) => (c.kind = v as PlaylistKind | ''), 'All types'),
     ),
     field(
       'Decade',
-      select('decade', options.decades.map((o) => ({ value: String(o.id), label: `${o.id}s${n(o.count)}` })), c.decade == null ? '' : String(c.decade), (v) => (c.decade = v ? Number(v) : null), 'Any decade'),
+      select('decade', () => options.decades.map((o) => ({ value: String(o.id), label: `${o.id}s${n(o.count)}` })), () => (c.decade == null ? '' : String(c.decade)), (v) => (c.decade = v ? Number(v) : null), 'Any decade'),
     ),
     field(
       'Genre',
-      select('genre', options.genres.map((o) => ({ value: o.id, label: o.id + n(o.count) })), c.genre ?? '', (v) => (c.genre = v), 'Any genre'),
-      options.genres.length === 0 ? 'No genres yet' : undefined,
+      select('genre', () => options.genres.map((o) => ({ value: o.id, label: o.id + n(o.count) })), () => c.genre ?? '', (v) => (c.genre = v), 'Any genre'),
+      () => (options.genres.length === 0 ? 'No genres yet' : undefined),
     ),
     field(
       'Key',
-      select('key', options.keys.map((o) => ({ value: o.id, label: o.label + n(o.count) })), c.key ?? '', (v) => (c.key = v), 'Any key'),
-      options.keys.length === 0 ? 'Find musical keys first' : undefined,
+      select('key', () => options.keys.map((o) => ({ value: o.id, label: o.label + n(o.count) })), () => c.key ?? '', (v) => (c.key = v), 'Any key'),
+      () => (options.keys.length === 0 ? 'Find musical keys first' : undefined),
     ),
     field(
       'Artist',
-      select('artist', options.artists.map((o) => ({ value: o.id, label: o.label + n(o.count) })), c.artist ?? '', (v) => (c.artist = v), 'Any artist'),
+      select('artist', () => options.artists.map((o) => ({ value: o.id, label: o.label + n(o.count) })), () => c.artist ?? '', (v) => (c.artist = v), 'Any artist'),
     ),
     field(
       'Size',
-      select('size', SIZE_OPTIONS.map((s) => ({ value: String(s), label: `${s}+ tracks` })), c.minTracks ? String(c.minTracks) : '', (v) => (c.minTracks = Number(v) || 0), 'Any size'),
+      select('size', () => SIZE_OPTIONS.map((s) => ({ value: String(s), label: `${s}+ tracks` })), () => (c.minTracks ? String(c.minTracks) : ''), (v) => (c.minTracks = Number(v) || 0), 'Any size'),
     ),
     clear,
   );
+
+  const setItems = (items: Browsable[]) => {
+    options = filterOptions(items);
+    // Drop filters whose value no longer matches any suggestion (e.g. after a different set).
+    if (c.kind && !options.kinds.some((o) => o.id === c.kind)) c.kind = '';
+    if (c.decade != null && !options.decades.some((o) => o.id === c.decade)) c.decade = null;
+    if (c.genre && !options.genres.some((o) => o.id === c.genre)) c.genre = '';
+    if (c.key && !options.keys.some((o) => o.id === c.key)) c.key = '';
+    if (c.artist && !options.artists.some((o) => o.id === c.artist)) c.artist = '';
+    for (const fill of fills) fill();
+    clear.hidden = !filtering();
+  };
+  return { el, setItems };
 }
 
 // ---------------------------------------------------------------------------
