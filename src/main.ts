@@ -26,6 +26,7 @@ import {
   type LibrarySnapshot,
 } from './library';
 import { MusicBrainzClient, type ArtistGenreMatch } from './musicbrainz';
+import { mapWithConcurrency } from './http';
 import { ReccoBeatsClient } from './reccobeats';
 import { homeHref, parseRoute, playlistHref, type Route } from './route';
 import { SessionCache, browserCache } from './session-cache';
@@ -52,6 +53,8 @@ let createdListRefresher: (() => void) | undefined;
 const removedStore = new RemovedStore(cache);
 
 const PREVIEW_COUNT = 5;
+/** Saved playlists whose tracks are read at once when checking suggestions against them. */
+const SAVED_TRACKS_CONCURRENCY = 3;
 /** Rough MusicBrainz pace for the estimate shown before a lookup (batched searches plus name fallbacks). */
 const MB_SECONDS_PER_ARTIST = 0.45;
 const THEME_KEY = 'curator.theme';
@@ -564,7 +567,7 @@ function createCuratorView(
       },
       (playlists, matched) => {
         const check = matchSaved(
-          playlists.map((p) => removedStore.apply(p)).filter((p) => createdStore.status(p.key, trackSignature(p)).kind === 'idle'),
+          playlists.filter((p) => !createdStore.hasRecord(p.key)).map((p) => removedStore.apply(p)),
           savedList.filter((s) => !matched.has(s.id)),
           state.saved.tracks,
         );
@@ -603,13 +606,11 @@ function createCuratorView(
     const ids = [...cur.needTracks].filter((id) => !(id in state.saved.tracks) && !tracksInFlight.has(id));
     if (ids.length === 0) return;
     for (const id of ids) tracksInFlight.add(id);
-    void Promise.all(
-      ids.map((id) =>
-        client.getPlaylistTracks(id).then(
-          (tracks) => (state.saved.tracks[id] = tracks),
-          // Unreadable: treat as sharing no tracks rather than asking again.
-          () => (state.saved.tracks[id] = { ids: [], keys: [] }),
-        ),
+    void mapWithConcurrency(ids, SAVED_TRACKS_CONCURRENCY, (id) =>
+      client.getPlaylistTracks(id).then(
+        (tracks) => (state.saved.tracks[id] = tracks),
+        // Unreadable: treat as sharing no tracks rather than asking again.
+        () => (state.saved.tracks[id] = { ids: [], keys: [] }),
       ),
     ).then(() => {
       for (const id of ids) tracksInFlight.delete(id);

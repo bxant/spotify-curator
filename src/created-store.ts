@@ -43,6 +43,13 @@ export class CreatedStore {
     return { kind: 'idle', error: this.errors.get(flightKey) };
   }
 
+  /** Whether `key` was created, is being created or failed to create this session, with any tracks. */
+  hasRecord(key: string): boolean {
+    const prefix = inFlightKey(key, '');
+    const matches = (k: string) => k.startsWith(prefix);
+    return this.entries(key).length > 0 || [...this.inFlight.keys()].some(matches) || [...this.errors.keys()].some(matches);
+  }
+
   /** Starts a creation unless one for `key` with these tracks is already running. */
   async create(
     key: string,
