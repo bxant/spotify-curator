@@ -791,14 +791,16 @@ function browseBar(state: CuratorState, onChange: () => void): { el: HTMLElement
     anyLabel?: string,
   ): HTMLSelectElement => {
     const el = h('select', { name }) as HTMLSelectElement;
-    fills.push(() => {
-      // Rebuilding the options of the focused select would close it mid-choice.
-      if (el === document.activeElement) return;
+    const fill = () => {
+      // Rebuilding the options of the focused select would close it mid-choice, unless its value was dropped.
+      if (el === document.activeElement && el.value === value()) return;
       const list = choices();
       el.replaceChildren(...(anyLabel ? [new Option(anyLabel, '')] : []), ...list.map((o) => new Option(o.label, o.value)));
       el.value = value();
       el.disabled = anyLabel !== undefined && list.length === 0;
-    });
+    };
+    fills.push(fill);
+    el.addEventListener('blur', fill);
     el.addEventListener('change', () => {
       set(el.value);
       clear.hidden = !filtering();
