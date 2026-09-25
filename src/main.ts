@@ -423,6 +423,7 @@ function createControls(client: SpotifyClient, state: CuratorState, p: CuratedPl
 
   const button = h('button', { class: 'primary', type: 'button' }, 'Create in Spotify') as HTMLButtonElement;
   const status = h('span', { class: 'status' });
+  const owner = generation;
   button.addEventListener('click', async () => {
     button.disabled = true;
     status.className = 'status';
@@ -434,8 +435,11 @@ function createControls(client: SpotifyClient, state: CuratorState, p: CuratedPl
         p.tracks.map((t) => t.uri),
         (added, total) => (status.textContent = `Adding tracks… ${added} / ${total}`),
       );
-      state.created[p.key] = { ...playlist, signature };
-      cache.set('created', state.created);
+      if (owner === generation) {
+        const entry: CreatedEntry = { ...playlist, signature };
+        state.created[p.key] = entry;
+        cache.set('created', { ...cache.get<Record<string, CreatedEntry>>('created'), [p.key]: entry });
+      }
       box.replaceChildren(...openLinks(playlist));
     } catch (err) {
       button.disabled = false;
