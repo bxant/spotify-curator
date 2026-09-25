@@ -1,0 +1,23 @@
+{
+  "name": "spotify-curator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local web page that curates playlists from your Spotify Liked Songs and creates them in your account.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "start": "vite",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vite": "^8.0.0",
+    "vitest": "^4.1.0"
+  }
+}
