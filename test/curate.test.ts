@@ -9,6 +9,7 @@ import {
   playScores,
   spreadSample,
   thinAlbumStacks,
+  trackSignature,
 } from '../src/curate';
 import type { CuratedPlaylist, LikedTrack, TrackKey } from '../src/types';
 import { NOW, bulkAlbum, history, ref, track } from './fixtures/builders';
@@ -302,5 +303,21 @@ describe('helpers', () => {
   it('capPerArtist keeps the first N per primary artist', () => {
     const tracks = singles('c', 6, { artist: (i) => (i % 2 ? 'odd' : 'even') });
     expect(ids(capPerArtist(tracks, 2))).toEqual(['c0', 'c1', 'c2', 'c3']);
+  });
+});
+
+describe('trackSignature', () => {
+  const playlist = (ids: string[]): CuratedPlaylist => ({
+    key: 'favorites',
+    kind: 'favorites',
+    name: 'Real Favorites',
+    reason: '',
+    tracks: ids.map((id) => track({ id })),
+  });
+
+  it('matches only while the track list is unchanged', () => {
+    expect(trackSignature(playlist(['1', '2']))).toBe(trackSignature(playlist(['1', '2'])));
+    expect(trackSignature(playlist(['1', '2']))).not.toBe(trackSignature(playlist(['1', '2', '3'])));
+    expect(trackSignature(playlist(['1', '2']))).not.toBe(trackSignature(playlist(['2', '1'])));
   });
 });

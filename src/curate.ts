@@ -531,3 +531,8 @@ function hash(s: string): number {
   }
   return h >>> 0;
 }
+
+/** Identifies a playlist's exact track list, so a created copy is only matched while it is unchanged. */
+export function trackSignature(p: CuratedPlaylist): string {
+  return p.tracks.map((t) => t.uri).join(' ');
+}

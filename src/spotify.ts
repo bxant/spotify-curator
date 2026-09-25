@@ -207,6 +207,7 @@ export class SpotifyClient {
   async getArtistGenres(
     artistIds: string[],
     onProgress?: (done: number, total: number, genres: Record<string, string[]>) => void,
+    signal?: AbortSignal,
     concurrency = 3,
   ): Promise<Record<string, string[]>> {
     const genres: Record<string, string[]> = {};
@@ -216,7 +217,7 @@ export class SpotifyClient {
       genres[id] = artist.genres ?? [];
       done++;
       onProgress?.(done, artistIds.length, genres);
-    });
+    }, signal);
     return genres;
   }
 

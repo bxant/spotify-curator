@@ -53,6 +53,7 @@ export class ReccoBeatsClient {
   async getTrackKeys(
     spotifyIds: string[],
     onProgress?: (done: number, total: number, keys: Record<string, TrackKey | null>) => void,
+    signal?: AbortSignal,
   ): Promise<Record<string, TrackKey | null>> {
     const keys: Record<string, TrackKey | null> = {};
     const batches: string[][] = [];
@@ -68,7 +69,7 @@ export class ReccoBeatsClient {
       }
       done += batch.length;
       onProgress?.(done, spotifyIds.length, keys);
-    });
+    }, signal);
     return keys;
   }
 

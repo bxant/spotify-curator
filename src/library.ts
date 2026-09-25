@@ -1,6 +1,7 @@
 // Loads everything curation needs, reusing the session cache where possible.
 // Genres and keys are enrichment: they load after the core library and failures
-// there degrade to "no genre/key playlists" instead of breaking the page.
+// there degrade to "no genre/key playlists" instead of breaking the page. Once a
+// lookup returns or its signal aborts, late results are dropped and not cached.
 
 import type { ReccoBeatsClient } from './reccobeats';
 import type { SessionCache } from './session-cache';
@@ -65,21 +66,25 @@ export async function loadGenres(
   liked: LikedTrack[],
   cache: SessionCache,
   onProgress: (done: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<EnrichmentResult<string[]>> {
   const known = cache.get<Record<string, string[]>>(GENRES_KEY) ?? {};
   const missing = artistsToLookUp(liked, known);
   const merged = { ...known };
+  let stopped = false;
   try {
     await client.getArtistGenres(missing, (done, total, genres) => {
+      if (stopped || signal?.aborted) return;
       Object.assign(merged, genres);
       if (done % SAVE_EVERY === 0) cache.set(GENRES_KEY, merged);
       onProgress(done, total);
-    });
+    }, signal);
     return { data: merged };
   } catch (err) {
     return { data: merged, error: (err as Error).message };
   } finally {
-    cache.set(GENRES_KEY, merged);
+    stopped = true;
+    if (!signal?.aborted) cache.set(GENRES_KEY, merged);
   }
 }
 
@@ -88,20 +93,24 @@ export async function loadKeys(
   liked: LikedTrack[],
   cache: SessionCache,
   onProgress: (done: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<EnrichmentResult<TrackKey | null>> {
   const known = cache.get<Record<string, TrackKey | null>>(KEYS_KEY) ?? {};
   const missing = liked.map((t) => t.id).filter((id) => !(id in known));
   const merged = { ...known };
+  let stopped = false;
   try {
     await recco.getTrackKeys(missing, (done, total, keys) => {
+      if (stopped || signal?.aborted) return;
       Object.assign(merged, keys);
       if (done % (SAVE_EVERY * 4) === 0) cache.set(KEYS_KEY, merged);
       onProgress(done, total);
-    });
+    }, signal);
     return { data: merged };
   } catch (err) {
     return { data: merged, error: (err as Error).message };
   } finally {
-    cache.set(KEYS_KEY, merged);
+    stopped = true;
+    if (!signal?.aborted) cache.set(KEYS_KEY, merged);
   }
 }

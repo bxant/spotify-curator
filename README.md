@@ -6,7 +6,7 @@ It runs only on your machine at http://127.0.0.1:8888. Nothing is saved to disk 
 
 ## Suggested playlists
 
-The page shows your Spotify profile, a few library stats, and one card per suggestion with its name, the reason for it, the track count, and a track preview. **Create in Spotify** creates a private playlist, adds the tracks 100 at a time, and then links to it on open.spotify.com and in the Spotify app.
+The page shows your Spotify profile, a few library stats, and one card per suggestion with its name, the reason for it, the track count, and a track preview. **Create in Spotify** creates a private playlist, adds the tracks 100 at a time, and then links to it on open.spotify.com and in the Spotify app. If the suggestion's tracks change later (for example when genres finish loading) or you click **Refresh data**, the card offers **Create in Spotify** again.
 
 | Playlist | How it is picked |
 | --- | --- |
@@ -14,7 +14,7 @@ The page shows your Spotify profile, a few library stats, and one card per sugge
 | **Rediscover: Liked, Then Forgotten** | Songs you liked one by one more than 90 days ago that never appear in your top tracks or recent plays. 50 picks spread across the years you liked them, at most 2 per artist. |
 | **Best of Each Album** | For albums you liked nearly whole in one sitting, only the tracks you actually play or liked on their own. |
 | **Genre: …** | Up to 8 of your biggest artist genres, skipping genres that mostly repeat an earlier one. |
-| **Key of …** | Up to 6 of the most common musical keys (with the Camelot code for harmonic mixing). |
+| **Key of …** | Up to 6 of the most common musical keys (with the Camelot code for harmonic mixing). Only after you click **Find musical keys** (see [Musical key](#musical-key-reccobeats)). |
 | **The 1990s, …** | One playlist per release decade, in release order. |
 
 Genre, key and decade playlists hold at most 100 tracks: played favorites first, then unplayed songs spread across your liked-at timeline, at most 4 per artist. They use the album-thinned library, so an album you liked whole contributes only its played tracks (or one track if none were played).
@@ -52,7 +52,7 @@ npm start
 
 Then open http://127.0.0.1:8888 in your browser. On WSL2, the Windows browser reaches the WSL server through localhost forwarding. If you open `localhost:8888`, the page switches to `127.0.0.1` so sign-in works.
 
-Loading takes about a minute: ~80 pages of liked songs, then single-artist genre lookups and batched key lookups in the background. Genre and key playlists appear when those finish. **Refresh data** refetches your likes and listening history. Genres and keys are only looked up for new tracks and artists.
+Loading takes about a minute: ~80 pages of liked songs, then single-artist genre lookups in the background. Genre playlists appear when those finish. Key playlists appear only after you click **Find musical keys**. **Refresh data** refetches your likes and listening history. Genres are only looked up for new artists, and keys for new tracks only when you click **Find musical keys** again.
 
 ## Development
 
@@ -93,4 +93,4 @@ Known limits:
 
 ### Musical key (ReccoBeats)
 
-Spotify no longer gives new apps musical key data. Keys come from [ReccoBeats](https://reccobeats.com), a free third-party API with no API key that returns Spotify-style audio features by Spotify track ID (`GET https://api.reccobeats.com/v1/audio-features?ids=…`, 40 IDs per request). The app sends it only Spotify track IDs, two requests at a time, and honors its `Retry-After`. Tracks it doesn't know have no key. If ReccoBeats is down or rate-limits hard, the page skips key playlists and shows a note.
+Spotify no longer gives new apps musical key data. Keys come from [ReccoBeats](https://reccobeats.com), a free third-party API with no API key that returns Spotify-style audio features by Spotify track ID (`GET https://api.reccobeats.com/v1/audio-features?ids=…`, 40 IDs per request). Key lookup is opt-in: nothing is sent to ReccoBeats until you click **Find musical keys**, and page loads and **Refresh data** never start it. It then sends the Spotify track IDs of your liked songs (and nothing else), two requests at a time, and honors its `Retry-After`. Tracks it doesn't know have no key. If ReccoBeats is down or rate-limits hard, the page skips key playlists and shows a note.
