@@ -5,11 +5,15 @@ import { curate, trackSignature, type CurationResult } from './curate';
 import { loadGenres, loadKeys, loadLibrary, type LibrarySnapshot } from './library';
 import { ReccoBeatsClient } from './reccobeats';
 import { SessionCache } from './session-cache';
+import { CreatedStore } from './created-store';
 import { SpotifyClient, type CreatedPlaylist } from './spotify';
 import type { CuratedPlaylist, LikedTrack, TrackKey } from './types';
 
 const app = document.getElementById('app') as HTMLElement;
 const cache = new SessionCache();
+/** Redraws the create controls of the card currently on the page for a playlist key. */
+const createControlRefreshers = new Map<string, () => void>();
+const createdStore = new CreatedStore(cache, (key) => createControlRefreshers.get(key)?.());
 
 /** Playlist description limit on Spotify. */
 const DESCRIPTION_MAX = 300;
@@ -138,11 +142,7 @@ interface CuratorState {
   notes: string[];
   genreProgress: string;
   keyProgress: string;
-  created: Record<string, CreatedEntry>;
 }
-
-/** A created playlist and the track list it was created from. */
-type CreatedEntry = CreatedPlaylist & { signature: string };
 
 async function showCurator(auth: SpotifyAuth, forceReload = false) {
   const current = nextGeneration();
@@ -181,7 +181,6 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
     notes: [],
     genreProgress: '',
     keyProgress: '',
-    created: cache.get<Record<string, CreatedEntry>>('created') ?? {},
   };
 
   // Key lookups send track IDs to ReccoBeats, so they only start when the owner asks.
@@ -265,7 +264,7 @@ function createCuratorView(
       h('h2', { class: 'section-title' }, `${result.playlists.length} suggested playlists`),
       result.playlists.length === 0
         ? h('p', { class: 'muted' }, 'Not enough liked songs or listening history to suggest playlists yet.')
-        : h('div', { class: 'grid' }, ...result.playlists.map((p) => playlistCard(client, state, p, open.has(p.key)))),
+        : h('div', { class: 'grid' }, ...result.playlists.map((p) => playlistCard(client, p, open.has(p.key)))),
     );
   };
 
@@ -288,12 +287,13 @@ function header(
   // Refetches likes and listening history; genre and key lookups stay cached and
   // only newly liked tracks' artists (and, on request, keys) are looked up.
   refresh.addEventListener('click', () => {
-    cache.set('created', {});
+    createdStore.reset();
     void showCurator(auth, true);
   });
   const signOut = h('button', { type: 'button' }, 'Sign out');
   signOut.addEventListener('click', () => {
     nextGeneration();
+    createdStore.reset();
     cache.clear();
     auth.signOut();
     showSignIn(auth);
@@ -364,7 +364,7 @@ const KIND_LABEL: Record<CuratedPlaylist['kind'], string> = {
   era: 'Decade',
 };
 
-function playlistCard(client: SpotifyClient, state: CuratorState, p: CuratedPlaylist, open: boolean): HTMLElement {
+function playlistCard(client: SpotifyClient, p: CuratedPlaylist, open: boolean): HTMLElement {
   const minutes = Math.round(p.tracks.reduce((sum, t) => sum + t.durationMs, 0) / 60_000);
   const duration = minutes >= 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes} min`;
   const rest = p.tracks.slice(PREVIEW_COUNT);
@@ -382,7 +382,7 @@ function playlistCard(client: SpotifyClient, state: CuratorState, p: CuratedPlay
     h('p', { class: 'reason' }, p.reason),
     trackList(p.tracks.slice(0, PREVIEW_COUNT)),
     details,
-    createControls(client, state, p),
+    createControls(client, p),
   );
 }
 
@@ -412,43 +412,38 @@ function trackList(tracks: LikedTrack[]): HTMLElement {
   );
 }
 
-function createControls(client: SpotifyClient, state: CuratorState, p: CuratedPlaylist): HTMLElement {
+function createControls(client: SpotifyClient, p: CuratedPlaylist): HTMLElement {
   const box = h('div', { class: 'create' });
   const signature = trackSignature(p);
-  const created = state.created[p.key];
-  if (created?.signature === signature) {
-    box.append(...openLinks(created));
-    return box;
-  }
+  const refresh = () => box.replaceChildren(...createControlsContent(client, p, signature));
+  createControlRefreshers.set(p.key, refresh);
+  refresh();
+  return box;
+}
+
+function createControlsContent(client: SpotifyClient, p: CuratedPlaylist, signature: string): HTMLElement[] {
+  const status = createdStore.status(p.key, signature);
+  if (status.kind === 'created') return openLinks(status.playlist);
 
   const button = h('button', { class: 'primary', type: 'button' }, 'Create in Spotify') as HTMLButtonElement;
-  const status = h('span', { class: 'status' });
-  const owner = generation;
-  button.addEventListener('click', async () => {
+  if (status.kind === 'creating') {
     button.disabled = true;
-    status.className = 'status';
-    status.textContent = 'Creating playlist…';
-    try {
-      const playlist = await client.createPlaylist(
-        p.name,
-        playlistDescription(p),
-        p.tracks.map((t) => t.uri),
-        (added, total) => (status.textContent = `Adding tracks… ${added} / ${total}`),
-      );
-      if (owner === generation) {
-        const entry: CreatedEntry = { ...playlist, signature };
-        state.created[p.key] = entry;
-        cache.set('created', { ...cache.get<Record<string, CreatedEntry>>('created'), [p.key]: entry });
-      }
-      box.replaceChildren(...openLinks(playlist));
-    } catch (err) {
-      button.disabled = false;
-      status.className = 'status error';
-      status.textContent = `Could not create the playlist: ${errorText(err)}`;
-    }
+    return [button, h('span', { class: 'status' }, status.progress)];
+  }
+  button.addEventListener('click', () => {
+    button.disabled = true;
+    void createdStore.create(p.key, signature, (onProgress) =>
+      client.createPlaylist(p.name, playlistDescription(p), p.tracks.map((t) => t.uri), (added, total) =>
+        onProgress(`Adding tracks… ${added} / ${total}`),
+      ),
+    );
   });
-  box.append(button, status);
-  return box;
+  return [
+    button,
+    status.error
+      ? h('span', { class: 'status error' }, `Could not create the playlist: ${status.error}`)
+      : h('span', { class: 'status' }),
+  ];
 }
 
 function openLinks(playlist: CreatedPlaylist): HTMLElement[] {
