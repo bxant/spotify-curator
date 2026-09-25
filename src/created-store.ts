@@ -1,13 +1,21 @@
 // Remembers which suggested playlists were created in Spotify this session, and
 // which are still being created, independent of page re-renders. A finished entry
-// only counts while the suggestion still has the exact tracks it was created from.
+// only counts for a card while the suggestion still has the exact tracks it was
+// created from; every creation stays listed (see `all()`), so curating a different
+// set never loses the link to a playlist already created.
 
 import type { SessionCache } from './session-cache';
 import type { CreatedPlaylist } from './spotify';
 
 const CREATED_KEY = 'created';
 
-type CreatedEntry = CreatedPlaylist & { signature: string };
+type CreatedEntry = CreatedPlaylist & { signature: string; name?: string };
+
+export interface CreatedRecord {
+  key: string;
+  name: string;
+  playlist: CreatedPlaylist;
+}
 
 export type CreateStatus =
   | { kind: 'idle'; error?: string }
@@ -27,10 +35,9 @@ export class CreatedStore {
   status(key: string, signature: string): CreateStatus {
     const progress = this.inFlight.get(key);
     if (progress !== undefined) return { kind: 'creating', progress };
-    const entry = this.finished()[key];
-    if (entry?.signature === signature) {
-      const { signature: _, ...playlist } = entry;
-      return { kind: 'created', playlist };
+    const entry = this.entries(key).find((e) => e.signature === signature);
+    if (entry) {
+      return { kind: 'created', playlist: toPlaylist(entry) };
     }
     return { kind: 'idle', error: this.errors.get(key) };
   }
@@ -40,6 +47,7 @@ export class CreatedStore {
     key: string,
     signature: string,
     run: (onProgress: (message: string) => void) => Promise<CreatedPlaylist>,
+    name?: string,
   ): Promise<void> {
     if (this.inFlight.has(key)) return;
     const epoch = this.epoch;
@@ -51,7 +59,10 @@ export class CreatedStore {
         this.inFlight.set(key, message);
         this.onChange(key);
       });
-      if (epoch === this.epoch) this.cache.set(CREATED_KEY, { ...this.finished(), [key]: { ...playlist, signature } });
+      if (epoch === this.epoch) {
+        const entry: CreatedEntry = { ...playlist, signature, ...(name ? { name } : {}) };
+        this.cache.set(CREATED_KEY, { ...this.finished(), [key]: [...this.entries(key), entry] });
+      }
     } catch (err) {
       if (epoch === this.epoch) this.errors.set(key, err instanceof Error ? err.message : String(err));
     } finally {
@@ -67,7 +78,24 @@ export class CreatedStore {
     this.cache.set(CREATED_KEY, {});
   }
 
-  private finished(): Record<string, CreatedEntry> {
-    return this.cache.get<Record<string, CreatedEntry>>(CREATED_KEY) ?? {};
+  /** Every playlist created this session, oldest first per suggestion. */
+  all(): CreatedRecord[] {
+    return Object.keys(this.finished()).flatMap((key) =>
+      this.entries(key).map((e) => ({ key, name: e.name ?? key, playlist: toPlaylist(e) })),
+    );
   }
+
+  private entries(key: string): CreatedEntry[] {
+    const value = this.finished()[key];
+    // Sessions from before a suggestion could be created twice stored a single entry.
+    return Array.isArray(value) ? value : value ? [value] : [];
+  }
+
+  private finished(): Record<string, CreatedEntry[] | CreatedEntry> {
+    return this.cache.get<Record<string, CreatedEntry[] | CreatedEntry>>(CREATED_KEY) ?? {};
+  }
+}
+
+function toPlaylist(entry: CreatedEntry): CreatedPlaylist {
+  return { id: entry.id, uri: entry.uri, url: entry.url };
 }

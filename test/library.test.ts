@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { artistsToLookUp, loadGenres, loadKeys } from '../src/library';
+import { artistsToLookUp, artistsToMatch, loadGenres, loadKeys, loadMusicBrainz, musicBrainzGenres } from '../src/library';
+import type { ArtistGenreMatch, MusicBrainzClient } from '../src/musicbrainz';
 import type { ReccoBeatsClient } from '../src/reccobeats';
 import { SessionCache } from '../src/session-cache';
 import { RateLimitError, SpotifyClient } from '../src/spotify';
@@ -82,5 +83,72 @@ describe('configuredClientId', () => {
     expect(configuredClientId('  ')).toBeNull();
     expect(configuredClientId('your-client-id-here')).toBeNull();
     expect(configuredClientId(' abc123 ')).toBe('abc123');
+  });
+});
+
+describe('artistsToMatch', () => {
+  it('lists unmatched artists most-liked first, preferring an ISRC where they lead the track', () => {
+    const liked = [
+      { ...track({ id: '1', artist: 'lead', extraArtists: ['guest'] }), isrc: 'ISRC-FEAT' },
+      { ...track({ id: '2', artist: 'guest' }), isrc: 'ISRC-OWN' },
+      track({ id: '3', artist: 'lead' }),
+      track({ id: '4', artist: 'noisrc' }),
+      track({ id: '5', artist: 'done' }),
+    ];
+    expect(artistsToMatch(liked, { done: {} })).toEqual([
+      { id: 'guest', name: 'GUEST', isrc: 'ISRC-OWN' },
+      { id: 'lead', name: 'LEAD', isrc: 'ISRC-FEAT' },
+      { id: 'noisrc', name: 'NOISRC' },
+    ]);
+  });
+});
+
+describe('loadMusicBrainz', () => {
+  const match = (genres: string[]): ArtistGenreMatch => ({ mbid: 'mb', via: 'name', genres });
+  const liked = [track({ id: '1', artist: 'x' }), track({ id: '2', artist: 'y' }), track({ id: '3', artist: 'cached' })];
+
+  it('looks up only new artists, fetches the genre list once, and caches each chunk', async () => {
+    const cache = new SessionCache(new MemoryStorage());
+    cache.set('musicbrainz.artists', { cached: match(['jazz']) });
+    let genreListCalls = 0;
+    const mb = {
+      async getGenreNames() {
+        genreListCalls++;
+        return ['folk'];
+      },
+      async findArtistGenres(
+        artists: { id: string }[],
+        genres: Set<string>,
+        onChunk: (r: Record<string, ArtistGenreMatch>, p: { done: number; total: number; etaSeconds: number }) => void,
+      ) {
+        expect(artists.map((a) => a.id)).toEqual(['x', 'y']);
+        expect([...genres]).toEqual(['folk']);
+        onChunk({ x: match(['folk']) }, { done: 1, total: 2, etaSeconds: 1 });
+        throw new Error('MusicBrainz request failed with HTTP 500');
+      },
+    } as unknown as MusicBrainzClient;
+
+    const result = await loadMusicBrainz(mb, liked, cache, () => {});
+    expect(result.error).toContain('HTTP 500');
+    expect(result.data).toEqual({ cached: match(['jazz']), x: match(['folk']) });
+    expect(cache.get('musicbrainz.artists')).toEqual(result.data);
+    expect(musicBrainzGenres(result.data)).toEqual({ cached: ['jazz'], x: ['folk'] });
+
+    await loadMusicBrainz(mb, liked, cache, () => {}).catch(() => {});
+    expect(genreListCalls).toBe(1);
+  });
+
+  it('reports no error when the owner stops the lookup', async () => {
+    const cache = new SessionCache(new MemoryStorage());
+    cache.set('musicbrainz.genres', ['folk']);
+    const controller = new AbortController();
+    const mb = {
+      async findArtistGenres() {
+        controller.abort();
+        throw new DOMException('aborted', 'AbortError');
+      },
+    } as unknown as MusicBrainzClient;
+    const result = await loadMusicBrainz(mb, liked, cache, () => {}, controller.signal);
+    expect(result.error).toBeUndefined();
   });
 });

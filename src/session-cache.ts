@@ -1,6 +1,8 @@
 // Session-scoped cache for fetched library data, so a page reload does not refetch
 // ~4000 liked songs. Lives in sessionStorage only: cleared when the tab closes,
 // never written to disk by the app. Every access tolerates a missing or full store.
+// The same class over localStorage (`browserCache()`) keeps the slow MusicBrainz
+// genre lookups across tabs; signing out clears both.
 
 const PREFIX = 'curator.cache.v1.';
 
@@ -37,6 +39,17 @@ export class SessionCache {
       // Nothing cached to clear.
     }
   }
+}
+
+/** A cache that outlives the tab, for public lookups that are slow to redo. */
+export function browserCache(): SessionCache {
+  let storage: Storage | null = null;
+  try {
+    storage = typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    // Storage disabled: nothing is cached.
+  }
+  return new SessionCache(storage);
 }
 
 function safeSessionStorage(): Storage | null {

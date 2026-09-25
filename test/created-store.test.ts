@@ -90,3 +90,24 @@ describe('CreatedStore', () => {
     expect(store.status('b', 'sig-b')).toEqual({ kind: 'created', playlist: playlist('pb') });
   });
 });
+
+describe('CreatedStore across different sets', () => {
+  it('keeps every created version of a suggestion linked and listed', async () => {
+    const { store } = setup();
+    await store.create('genre:rock', 'first-tracks', async () => playlist('p1'), 'Genre: Rock');
+    await store.create('genre:rock', 'other-tracks', async () => playlist('p2'), 'Genre: Rock');
+    expect(store.status('genre:rock', 'first-tracks')).toEqual({ kind: 'created', playlist: playlist('p1') });
+    expect(store.status('genre:rock', 'other-tracks')).toEqual({ kind: 'created', playlist: playlist('p2') });
+    expect(store.all()).toEqual([
+      { key: 'genre:rock', name: 'Genre: Rock', playlist: playlist('p1') },
+      { key: 'genre:rock', name: 'Genre: Rock', playlist: playlist('p2') },
+    ]);
+  });
+
+  it('reads entries saved in the single-entry shape', () => {
+    const { store, cache } = setup();
+    cache.set('created', { favorites: { ...playlist('old'), signature: 'sig' } });
+    expect(store.status('favorites', 'sig')).toEqual({ kind: 'created', playlist: playlist('old') });
+    expect(store.all()).toEqual([{ key: 'favorites', name: 'favorites', playlist: playlist('old') }]);
+  });
+});

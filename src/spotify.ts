@@ -278,6 +278,7 @@ interface TrackObject {
   disc_number: number;
   track_number: number;
   artists: { id: string | null; name: string }[];
+  external_ids?: { isrc?: string };
   album: {
     id: string | null;
     name: string;
@@ -307,20 +308,22 @@ export function toLikedTrack(item: SavedTrackItem): LikedTrack | null {
     discNumber: t.disc_number,
     trackNumber: t.track_number,
     addedAt: item.added_at,
+    ...(t.external_ids?.isrc ? { isrc: t.external_ids.isrc.toUpperCase() } : {}),
   };
 }
 
 function toAlbum(a: TrackObject['album']): AlbumInfo {
-  const images = a.images ?? [];
-  // Prefer the smallest image that is still at least 64px wide.
-  const image = [...images].sort((x, y) => (x.width ?? 0) - (y.width ?? 0)).find((i) => (i.width ?? 0) >= 64);
+  const images = [...(a.images ?? [])].sort((x, y) => (x.width ?? 0) - (y.width ?? 0));
+  // Prefer the smallest image that is still big enough for where it is shown.
+  const atLeast = (px: number) => (images.find((i) => (i.width ?? 0) >= px) ?? images.at(-1))?.url;
   return {
     id: a.id ?? `unknown:${a.name}`,
     name: a.name,
     albumType: a.album_type,
     releaseDate: a.release_date ?? '',
     totalTracks: a.total_tracks,
-    imageUrl: (image ?? images[0])?.url,
+    imageUrl: atLeast(64),
+    coverUrl: atLeast(300),
   };
 }
 

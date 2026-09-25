@@ -5,11 +5,14 @@ import {
   capPerArtist,
   curate,
   detectAlbumStacks,
+  keepSelected,
   keyName,
+  mergeGenres,
   playScores,
   spreadSample,
   thinAlbumStacks,
   trackSignature,
+  withKept,
 } from '../src/curate';
 import type { CuratedPlaylist, LikedTrack, TrackKey } from '../src/types';
 import { NOW, bulkAlbum, history, ref, track } from './fixtures/builders';
@@ -319,5 +322,117 @@ describe('trackSignature', () => {
     expect(trackSignature(playlist(['1', '2']))).toBe(trackSignature(playlist(['1', '2'])));
     expect(trackSignature(playlist(['1', '2']))).not.toBe(trackSignature(playlist(['1', '2', '3'])));
     expect(trackSignature(playlist(['1', '2']))).not.toBe(trackSignature(playlist(['2', '1'])));
+  });
+});
+
+describe('curate: artists', () => {
+  it('builds one playlist per most-liked or most-played artist, drawn from liked songs', () => {
+    const big = singles('big', 30, { artist: () => 'big' });
+    const played = singles('pl', 10, { artist: () => 'played' });
+    const small = singles('sm', LIMITS.minArtistTracks - 1, { artist: () => 'small' });
+    const feat = singles('ft', 9, { artist: (i) => `lead${i}` }).map((t) => ({ ...t, artists: [...t.artists, { id: 'guest', name: 'GUEST' }] }));
+    const liked = [...big, ...played, ...small, ...feat];
+    const h = history({ topArtists: { short_term: ['played'] }, recent: played.slice(0, 3).map(ref) });
+    const { playlists } = curate(liked, h, { now: NOW });
+    const artists = playlists.filter((p) => p.kind === 'artist');
+
+    expect(artists.map((p) => p.key)).toEqual(['artist:played', 'artist:big', 'artist:guest']);
+    expect(artists[0].name).toBe('Artist: PLAYED');
+    expect(artists[0].reason).toContain('one of your top artists');
+    expect(ids(artists[0].tracks.slice(0, 3)).sort()).toEqual(['pl0', 'pl1', 'pl2']);
+    expect(artists[1].tracks).toHaveLength(30);
+    expect(artists[2].tracks).toHaveLength(9); // featured credits count too
+  });
+
+  it('caps the number of artist playlists and their length', () => {
+    const liked = Array.from({ length: 10 }, (_, a) => singles(`a${a}-`, 60, { artist: () => `artist${a}` })).flat();
+    const artists = curate(liked, history(), { now: NOW }).playlists.filter((p) => p.kind === 'artist');
+    expect(artists).toHaveLength(LIMITS.maxArtistPlaylists);
+    expect(artists.every((p) => p.tracks.length === LIMITS.artistTracks)).toBe(true);
+  });
+});
+
+describe('curate: MusicBrainz genres', () => {
+  it('merges MusicBrainz genres with Spotify genres into shared genre playlists', () => {
+    const liked = singles('g', 30, { artist: (i) => `ar${i % 10}` });
+    const spotify: Record<string, string[]> = { ar0: ['Shoegaze'], ar1: ['shoegaze'] };
+    const mb: Record<string, string[]> = {};
+    for (let i = 2; i < 10; i++) mb[`ar${i}`] = ['shoegaze'];
+    const { playlists, stats } = curate(liked, history(), { now: NOW, artistGenres: spotify, musicBrainzGenres: mb });
+    const shoegaze = find(playlists, 'genre:shoegaze')!;
+    expect(shoegaze.tracks).toHaveLength(30);
+    expect(shoegaze.reason).toContain('on Spotify or MusicBrainz');
+    expect(stats.tracksWithGenres).toBe(30);
+  });
+
+  it('mergeGenres lowercases and de-duplicates across sources', () => {
+    expect(mergeGenres({ a: ['Rock', ' pop '] }, { a: ['rock', 'Jazz'], b: ['folk'] })).toEqual({
+      a: ['rock', 'pop', 'jazz'],
+      b: ['folk'],
+    });
+  });
+});
+
+describe('curate: a different set', () => {
+  const liked = [
+    ...singles('s', 300, { artist: (i) => `a${i % 60}` }).map((t, i) => ({
+      ...t,
+      album: { ...t.album, releaseDate: `${1960 + (i % 60)}-01-01` },
+    })),
+  ];
+  const h = history({ top: { short_term: liked.slice(0, 40).map(ref) }, recent: liked.slice(100, 110).map(ref) });
+  const genreNames = Array.from({ length: 12 }, (_, g) => `genre${String(g).padStart(2, '0')}`);
+  const artistGenres = Object.fromEntries(Array.from({ length: 60 }, (_, a) => [`a${a}`, [genreNames[a % 12]]]));
+  const options = { now: NOW, artistGenres };
+
+  it('variant 0 is the default set', () => {
+    expect(curate(liked, h, { ...options, variant: 0 })).toEqual(curate(liked, h, options));
+  });
+
+  it('picks different genres and different tracks, deterministically', () => {
+    const first = curate(liked, h, options).playlists;
+    const second = curate(liked, h, { ...options, variant: 1 }).playlists;
+    expect(curate(liked, h, { ...options, variant: 1 }).playlists).toEqual(second);
+
+    const genreKeys = (ps: CuratedPlaylist[]) => ps.filter((p) => p.kind === 'genre').map((p) => p.key);
+    expect(genreKeys(first)).toHaveLength(LIMITS.maxGenrePlaylists);
+    expect(genreKeys(second).some((k) => !genreKeys(first).includes(k))).toBe(true);
+
+    const rediscover = [find(first, 'rediscover')!, find(second, 'rediscover')!];
+    expect(ids(rediscover[1].tracks)).not.toEqual(ids(rediscover[0].tracks));
+    expect(rediscover[1].tracks).toHaveLength(rediscover[0].tracks.length);
+
+    for (const p of second) {
+      const before = find(first, p.key);
+      if (before) expect(trackSignature(p), p.key).not.toBe(trackSignature(before));
+      expect(new Set(ids(p.tracks)).size).toBe(p.tracks.length);
+    }
+    expect(find(second, 'favorites')!.reason).toContain('fresh');
+  });
+
+  it('keeps the chosen suggestions unchanged and fills in the rest from the fresh set', () => {
+    const first = curate(liked, h, options).playlists;
+    const kept = keepSelected(first, new Set(['favorites', 'era:1970']));
+    expect(kept.map((p) => p.key)).toEqual(['favorites', 'era:1970']);
+
+    const fresh = curate(liked, h, { ...options, variant: 1 }).playlists;
+    const shown = withKept(kept, fresh);
+    expect(shown.slice(0, 2)).toEqual(kept);
+    expect(shown.filter((p) => p.key === 'favorites')).toHaveLength(1);
+    expect(shown.filter((p) => p.key === 'era:1970')).toHaveLength(1);
+    expect(shown.length).toBe(fresh.length);
+    expect(find(shown, 'rediscover')).toEqual(find(fresh, 'rediscover'));
+  });
+
+  it('drops a fresh suggestion that repeats a kept one track for track', () => {
+    const a: CuratedPlaylist = { key: 'genre:x', kind: 'genre', name: 'X', reason: '', tracks: [track({ id: '1' })] };
+    const same = { ...a, key: 'genre:y' };
+    expect(withKept([a], [same]).map((p) => p.key)).toEqual(['genre:x']);
+  });
+
+  it('spreadSample with a phase shifts the picks but keeps the spacing', () => {
+    const items = Array.from({ length: 10 }, (_, i) => i);
+    expect(spreadSample(items, 5, 0)).toEqual([0, 2, 4, 6, 8]);
+    expect(spreadSample(items, 5, 0.5)).toEqual([1, 3, 5, 7, 9]);
   });
 });
