@@ -7,8 +7,11 @@ import {
   type LikedTrack,
   type ListeningHistory,
   type PlayedTrackRef,
+  type SavedPlaylist,
+  type SavedTracks,
   type TimeRange,
 } from './types';
+import { trackKey } from './curate';
 import { defaultSleep, mapWithConcurrency, retryAfterMs } from './http';
 
 export const API_BASE = 'https://api.spotify.com/v1';
@@ -221,6 +224,52 @@ export class SpotifyClient {
     return genres;
   }
 
+  /**
+   * The signed-in user's own playlists (GET /me/playlists), without the ones they only
+   * follow. Private playlists need the playlist-read-private scope. Read-only.
+   */
+  async getOwnPlaylists(userId: string): Promise<SavedPlaylist[]> {
+    const playlists: SavedPlaylist[] = [];
+    let next: string | null = `/me/playlists?limit=${PAGE_LIMIT}`;
+    while (next) {
+      const page: Paging<PlaylistObject | null> = await this.request('GET', next);
+      for (const p of page.items) {
+        if (!p || p.owner?.id !== userId) continue;
+        const count = (p.items ?? p.tracks)?.total;
+        playlists.push({
+          id: p.id,
+          name: p.name,
+          description: p.description ?? '',
+          uri: p.uri,
+          url: p.external_urls?.spotify ?? `https://open.spotify.com/playlist/${p.id}`,
+          ...(typeof count === 'number' ? { trackCount: count } : {}),
+        });
+      }
+      next = page.next;
+    }
+    return playlists;
+  }
+
+  /**
+   * Track IDs and name/artist keys of one of the user's own playlists
+   * (GET /playlists/{id}/items). Local files and podcast episodes are skipped. Read-only.
+   */
+  async getPlaylistTracks(playlistId: string): Promise<SavedTracks> {
+    const tracks: SavedTracks = { ids: [], keys: [] };
+    let next: string | null = `/playlists/${encodeURIComponent(playlistId)}/items?limit=${PAGE_LIMIT}`;
+    while (next) {
+      const page: Paging<PlaylistItemObject> = await this.request('GET', next);
+      for (const entry of page.items) {
+        const t = entry.item ?? entry.track;
+        if (!t || !t.id || t.is_local || (t.type && t.type !== 'track')) continue;
+        tracks.ids.push(t.id);
+        tracks.keys.push(trackKey(t.name ?? '', t.artists?.find((a) => a.id)?.id ?? undefined));
+      }
+      next = page.next;
+    }
+    return tracks;
+  }
+
   /** Creates a private playlist for the signed-in user and adds the tracks in batches. */
   async createPlaylist(
     name: string,
@@ -287,6 +336,23 @@ interface TrackObject {
     total_tracks: number;
     images?: { url: string; width: number | null }[];
   };
+}
+
+/** Spotify renamed a playlist's `tracks` to `items` in February 2026; both are read. */
+interface PlaylistObject {
+  id: string;
+  name: string;
+  description: string | null;
+  uri: string;
+  owner?: { id: string };
+  external_urls?: { spotify?: string };
+  items?: { total?: number };
+  tracks?: { total?: number };
+}
+
+interface PlaylistItemObject {
+  item?: Partial<TrackObject> | null;
+  track?: Partial<TrackObject> | null;
 }
 
 interface SavedTrackItem {

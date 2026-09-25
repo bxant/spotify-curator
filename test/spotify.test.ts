@@ -152,3 +152,64 @@ describe('SpotifyClient.createPlaylist', () => {
     expect(progress).toEqual([100, 200, 250]);
   });
 });
+
+describe('SpotifyClient saved playlists (read-only)', () => {
+  it('pages through the user’s playlists and keeps only the ones they own', async () => {
+    const owned = (id: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      name: `List ${id}`,
+      description: 'Picked. Curated from Liked Songs by spotify-curator.',
+      uri: `spotify:playlist:${id}`,
+      owner: { id: 'me' },
+      external_urls: { spotify: `https://open.spotify.com/playlist/${id}` },
+      items: { href: '', total: 12 },
+      ...extra,
+    });
+    const { c, calls } = client((call) => {
+      const url = new URL(call.url);
+      expect(url.pathname).toBe('/v1/me/playlists');
+      return url.searchParams.get('offset') === '50'
+        ? json({ items: [owned('p3', { items: undefined, tracks: { total: 7 }, description: null })], next: null, total: 3 })
+        : json({
+            items: [owned('p1'), owned('followed', { owner: { id: 'someone-else' } }), null],
+            next: 'https://api.spotify.com/v1/me/playlists?offset=50&limit=50',
+            total: 3,
+          });
+    });
+    const playlists = await c.getOwnPlaylists('me');
+    expect(playlists).toEqual([
+      {
+        id: 'p1',
+        name: 'List p1',
+        description: 'Picked. Curated from Liked Songs by spotify-curator.',
+        uri: 'spotify:playlist:p1',
+        url: 'https://open.spotify.com/playlist/p1',
+        trackCount: 12,
+      },
+      { id: 'p3', name: 'List p3', description: '', uri: 'spotify:playlist:p3', url: 'https://open.spotify.com/playlist/p3', trackCount: 7 },
+    ]);
+    expect(calls.map((call) => call.method)).toEqual(['GET', 'GET']);
+    expect(calls[0].url).toBe('https://api.spotify.com/v1/me/playlists?limit=50');
+  });
+
+  it('reads a playlist’s tracks from `item` (or the older `track`), skipping local files and episodes', async () => {
+    const { c, calls } = client((call) =>
+      call.url.includes('offset=50')
+        ? json({ items: [{ track: rawTrack('old-shape') }], next: null, total: 5 })
+        : json({
+            items: [
+              { item: rawTrack('a', { name: '  Some  Song ' }) },
+              { item: rawTrack('local', { id: null, is_local: true }) },
+              { item: { id: 'ep', type: 'episode', name: 'Episode', uri: 'spotify:episode:ep' } },
+              { item: null },
+            ],
+            next: 'https://api.spotify.com/v1/playlists/pl%201/items?offset=50&limit=50',
+            total: 5,
+          }),
+    );
+    const tracks = await c.getPlaylistTracks('pl 1');
+    expect(tracks).toEqual({ ids: ['a', 'old-shape'], keys: ['some song|artist-a', 'song old-shape|artist-old-shape'] });
+    expect(calls[0].url).toBe('https://api.spotify.com/v1/playlists/pl%201/items?limit=50');
+    expect(calls.every((call) => call.method === 'GET')).toBe(true);
+  });
+});

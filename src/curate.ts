@@ -31,6 +31,11 @@ export interface CurationOptions {
    * fit, and a different (seeded, so still deterministic) selection and order of tracks.
    */
   variant?: number;
+  /**
+   * Suggestion keys to leave out, e.g. ones already saved in Spotify. Artist, genre and
+   * key picks fill up with the next candidates instead, so fresh suggestions take their place.
+   */
+  exclude?: ReadonlySet<string>;
 }
 
 export interface CurationStats {
@@ -102,16 +107,17 @@ export function curate(
   const genreSource = mbGenres && Object.keys(mbGenres).length > 0 ? 'on Spotify or MusicBrainz' : '';
   const keys = options.trackKeys ?? {};
   const mix = new Mix(options.variant ?? 0);
+  const exclude = options.exclude ?? new Set<string>();
 
   const playlists = [
     favoritesPlaylist(tracks, scores, mix),
     rediscoverPlaylist(tracks, stacks, scores, options.now, mix),
     bestOfAlbumsPlaylist(stacks, scores, mix),
-    ...artistPlaylists(thinned, history, scores, mix),
-    ...genrePlaylists(thinned, genres, scores, mix, genreSource),
-    ...keyPlaylists(thinned, keys, scores, mix),
+    ...artistPlaylists(thinned, history, scores, mix, exclude),
+    ...genrePlaylists(thinned, genres, scores, mix, genreSource, exclude),
+    ...keyPlaylists(thinned, keys, scores, mix, exclude),
     ...eraPlaylists(thinned, scores, mix),
-  ].filter((p): p is CuratedPlaylist => p !== null);
+  ].filter((p): p is CuratedPlaylist => p !== null && !exclude.has(p.key));
 
   let stackedTracks = 0;
   for (const stack of stacks.values()) stackedTracks += stack.bulk.length;
@@ -336,6 +342,7 @@ function artistPlaylists(
   history: ListeningHistory,
   scores: Map<string, number>,
   mix: Mix,
+  exclude: ReadonlySet<string>,
 ): CuratedPlaylist[] {
   const byArtist = new Map<string, { name: string; tracks: LikedTrack[] }>();
   for (const t of thinned) {
@@ -352,7 +359,7 @@ function artistPlaylists(
   }
 
   const candidates = [...byArtist.entries()]
-    .filter(([, e]) => e.tracks.length >= LIMITS.minArtistTracks)
+    .filter(([id, e]) => e.tracks.length >= LIMITS.minArtistTracks && !exclude.has(`artist:${id}`))
     .map(([id, e]) => {
       let plays = topBonus.get(id) ?? 0;
       for (const t of e.tracks) plays += scores.get(t.id) ?? 0;
@@ -393,6 +400,7 @@ function genrePlaylists(
   scores: Map<string, number>,
   mix: Mix,
   source: string,
+  exclude: ReadonlySet<string>,
 ): CuratedPlaylist[] {
   const byGenre = new Map<string, LikedTrack[]>();
   for (const t of thinned) {
@@ -408,12 +416,18 @@ function genrePlaylists(
     .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
 
   const chosen: { ids: Set<string>; playlist: CuratedPlaylist }[] = [];
+  // Excluded genres do not use up a slot, but a genre that mostly repeats one still counts as redundant.
+  const excluded: Set<string>[] = [];
   for (const [genre, list] of mix.rotate(candidates, LIMITS.maxGenrePlaylists)) {
     if (chosen.length >= LIMITS.maxGenrePlaylists) break;
     const ids = new Set(list.map((t) => t.id));
-    const redundant = chosen.some((c) => overlap(ids, c.ids) >= LIMITS.genreOverlap);
+    const redundant = [...chosen.map((c) => c.ids), ...excluded].some((other) => overlap(ids, other) >= LIMITS.genreOverlap);
     if (redundant) continue;
     const key = `genre:${genre}`;
+    if (exclude.has(key)) {
+      excluded.push(ids);
+      continue;
+    }
     const tracks = pickTracks(list, scores, LIMITS.maxTracks, LIMITS.perArtistBucket, mix, key);
     chosen.push({
       ids,
@@ -436,6 +450,7 @@ function keyPlaylists(
   trackKeys: Record<string, TrackKey | null>,
   scores: Map<string, number>,
   mix: Mix,
+  exclude: ReadonlySet<string>,
 ): CuratedPlaylist[] {
   const byKey = groupBy(
     thinned.filter((t) => trackKeys[t.id]),
@@ -445,7 +460,7 @@ function keyPlaylists(
     },
   );
   const candidates = [...byKey.entries()]
-    .filter(([, list]) => list.length >= LIMITS.minBucketTracks)
+    .filter(([id, list]) => list.length >= LIMITS.minBucketTracks && !exclude.has(`key:${id}`))
     .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
   return mix
     .rotate(candidates, LIMITS.maxKeyPlaylists)

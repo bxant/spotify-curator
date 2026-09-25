@@ -31,8 +31,9 @@ import { homeHref, parseRoute, playlistHref, type Route } from './route';
 import { SessionCache, browserCache } from './session-cache';
 import { CreatedStore } from './created-store';
 import { RemovedStore } from './removed-store';
+import { APP_TAG, matchSaved, playlistDescription, setAsideSaved, type SavedMatch } from './saved';
 import { SpotifyClient, type CreatedPlaylist } from './spotify';
-import type { CuratedPlaylist, LikedTrack, PlaylistKind, TrackKey } from './types';
+import type { CuratedPlaylist, LikedTrack, PlaylistKind, SavedPlaylist, SavedTracks, TrackKey } from './types';
 
 const app = document.getElementById('app') as HTMLElement;
 const cache = new SessionCache();
@@ -50,8 +51,6 @@ let createdListRefresher: (() => void) | undefined;
 /** Tracks the owner removed from recommendations; every view and Create use the edited lists. */
 const removedStore = new RemovedStore(cache);
 
-/** Playlist description limit on Spotify. */
-const DESCRIPTION_MAX = 300;
 const PREVIEW_COUNT = 5;
 /** Rough MusicBrainz pace for the estimate shown before a lookup (batched searches plus name fallbacks). */
 const MB_SECONDS_PER_ARTIST = 0.45;
@@ -298,7 +297,7 @@ function showSignIn(auth: SpotifyAuth, error?: string) {
       h(
         'p',
         { class: 'muted small' },
-        'Read-only access to your library, top items and recent plays, plus permission to create private playlists. ' +
+        'Read-only access to your library, top items, recent plays and playlists, plus permission to create private playlists. ' +
           'Nothing is stored outside this browser.',
       ),
     ),
@@ -328,6 +327,19 @@ interface CuratorState {
   /** Suggestions the owner kept when curating a different set, exactly as they were. */
   kept: CuratedPlaylist[];
   criteria: BrowseCriteria;
+  saved: SavedState;
+  /** Also list the suggestions already saved in Spotify (hidden by default). */
+  showSaved: boolean;
+}
+
+/** The user's own playlists, read on every load so suggestions saved before are recognized. */
+interface SavedState {
+  /** Only `ready` recognizes earlier sessions' playlists; the others still recognize this session's. */
+  status: 'ready' | 'needs-consent' | 'error';
+  playlists: SavedPlaylist[];
+  /** Tracks of the few playlists that only their tracks can match or rule out. */
+  tracks: Record<string, SavedTracks>;
+  error?: string;
 }
 
 const DEFAULT_CRITERIA: BrowseCriteria = { sort: 'recommended' };
@@ -369,9 +381,12 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
   }
 
   if (current !== generation) return;
+  status.textContent = 'Checking which suggestions are already in your Spotify…';
+  const saved = await loadSavedPlaylists(auth, client, library.profile.id);
+  if (current !== generation) return;
   // Refresh data goes back to the default set.
   if (forceReload) cache.set(SET_KEY, null);
-  const saved = cache.get<SavedSet>(SET_KEY);
+  const set = cache.get<SavedSet>(SET_KEY);
   const state: CuratorState = {
     library,
     genres: cache.get<Record<string, string[]>>('genres') ?? {},
@@ -381,9 +396,11 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
     genreProgress: '',
     keyRun: { running: false, done: 0, total: 0 },
     mbRun: { running: false, done: 0, total: 0 },
-    variant: saved?.variant ?? 0,
-    kept: saved?.kept ?? [],
+    variant: set?.variant ?? 0,
+    kept: set?.kept ?? [],
     criteria: route.name === 'home' ? { ...route.criteria } : { ...DEFAULT_CRITERIA },
+    saved,
+    showSaved: false,
   };
 
   /** A signal that aborts on a new page load or when the owner clicks Stop. */
@@ -469,6 +486,27 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
   view.render();
 }
 
+/** Reads the user's own playlists; never changes them. Failing here only disables the check. */
+async function loadSavedPlaylists(auth: SpotifyAuth, client: SpotifyClient, userId: string): Promise<SavedState> {
+  // Sessions signed in before the app asked for playlist-read-private must consent again.
+  if (!auth.hasAllScopes()) return { status: 'needs-consent', playlists: [], tracks: {} };
+  try {
+    return { status: 'ready', playlists: await client.getOwnPlaylists(userId), tracks: {} };
+  } catch (err) {
+    return { status: 'error', playlists: [], tracks: {}, error: errorText(err) };
+  }
+}
+
+/** Playlists created in this session count as saved too, for suggestions other than their own card. */
+function savedPlaylists(state: CuratorState): SavedPlaylist[] {
+  const known = new Set(state.saved.playlists.map((p) => p.id));
+  const created = createdStore
+    .all()
+    .filter((c) => !known.has(c.playlist.id))
+    .map((c) => ({ id: c.playlist.id, name: c.name, description: APP_TAG, uri: c.playlist.uri, url: c.playlist.url }));
+  return [...state.saved.playlists, ...created];
+}
+
 interface Actions {
   findKeys: () => void;
   findGenres: () => void;
@@ -506,25 +544,78 @@ function createCuratorView(
 
   const curateNow = () => {
     const mbGenres = musicBrainzGenres(state.musicBrainz);
-    const result = curate(state.library.liked, state.library.history, {
+    const options = {
       now: new Date(),
       artistGenres: state.genres,
       musicBrainzGenres: mbGenres,
       trackKeys: state.keys,
       variant: state.variant,
-    });
+    };
+    let result = curate(state.library.liked, state.library.history, options);
+    const savedList = savedPlaylists(state);
+    const needTracks = new Set<string>();
+    // Saved suggestions are set aside and the next candidates fill in; a card created
+    // from this page keeps showing its own Open links instead. Matching and Create both
+    // see the tracks as shown, without the ones the owner removed.
+    const { fresh, saved } = setAsideSaved(
+      (exclude) => {
+        if (exclude.size > 0) result = curate(state.library.liked, state.library.history, { ...options, exclude });
+        return withKept(state.kept, result.playlists);
+      },
+      (playlists, matched) => {
+        const check = matchSaved(
+          playlists.map((p) => removedStore.apply(p)).filter((p) => createdStore.status(p.key, trackSignature(p)).kind === 'idle'),
+          savedList.filter((s) => !matched.has(s.id)),
+          state.saved.tracks,
+        );
+        for (const id of check.needTracks) needTracks.add(id);
+        return check.matches;
+      },
+    );
     /** As curated (kept suggestions carry these, so a removal can still be undone after a new set). */
-    const curated = withKept(state.kept, result.playlists);
+    const curated = [...fresh, ...saved.map((s) => s.playlist)];
     /** As shown and created: without the tracks the owner removed. */
-    const shown = curated.map((p) => removedStore.apply(p));
+    const shown = fresh.map((p) => removedStore.apply(p));
     const artistGenres = mergeGenres(state.genres, mbGenres);
     const facetInputs = { artistGenres, trackKeys: state.keys };
-    const items: Browsable[] = shown.map((playlist) => ({ playlist, facets: playlistFacets(playlist, facetInputs) }));
-    return { result, curated, shown, items, artistGenres, keptKeys: new Set(state.kept.map((p) => p.key)) };
+    const browsable = (playlist: CuratedPlaylist): Browsable => ({ playlist, facets: playlistFacets(playlist, facetInputs) });
+    return {
+      result,
+      curated,
+      shown,
+      freshItems: shown.map(browsable),
+      savedItems: saved.map((s) => browsable(removedStore.apply(s.playlist))),
+      savedMatches: new Map(saved.map((s) => [s.playlist.key, s.match])),
+      needTracks,
+      artistGenres,
+      keptKeys: new Set(state.kept.map((p) => p.key)),
+    };
   };
+  type Curated = ReturnType<typeof curateNow>;
 
   /** Refreshes the suggestions of the current page in place; set by each full render. */
   let refresh = () => {};
+  /** Saved playlists whose tracks are being fetched. */
+  const tracksInFlight = new Set<string>();
+
+  /** Fetches the tracks some matches depend on, then refreshes the suggestions once. */
+  const fetchNeededTracks = (cur: Curated) => {
+    const ids = [...cur.needTracks].filter((id) => !(id in state.saved.tracks) && !tracksInFlight.has(id));
+    if (ids.length === 0) return;
+    for (const id of ids) tracksInFlight.add(id);
+    void Promise.all(
+      ids.map((id) =>
+        client.getPlaylistTracks(id).then(
+          (tracks) => (state.saved.tracks[id] = tracks),
+          // Unreadable: treat as sharing no tracks rather than asking again.
+          () => (state.saved.tracks[id] = { ids: [], keys: [] }),
+        ),
+      ),
+    ).then(() => {
+      for (const id of ids) tracksInFlight.delete(id);
+      update();
+    });
+  };
 
   /** Keeps the address bar in step with the sort and filters, without adding history entries. */
   const syncHomeUrl = () => {
@@ -536,19 +627,31 @@ function createCuratorView(
 
   const renderHome = () => {
     let cur = curateNow();
+    const items = () => (state.showSaved ? [...cur.freshItems, ...cur.savedItems] : cur.freshItems);
 
     const grid = h('div', { class: 'grid' });
     const count = h('p', { class: 'recs-count', role: 'status' });
+    const savedLine = h('p', { class: 'muted small saved-line' });
     const renderGrid = () => {
-      const { items, keptKeys } = cur;
-      const visible = browse(items, state.criteria);
+      const { keptKeys, savedMatches } = cur;
+      const all = items();
+      const visible = browse(all, state.criteria);
       count.textContent =
-        visible.length === items.length ? `All ${items.length} playlists` : `${visible.length} of ${items.length} playlists`;
+        visible.length === all.length ? `All ${all.length} playlists` : `${visible.length} of ${all.length} playlists`;
+      renderSavedLine();
       grid.replaceChildren(
         ...(visible.length > 0
-          ? visible.map(({ playlist, facets }) => playlistCard(client, playlist, facets, keptKeys.has(playlist.key)))
-          : items.length === 0
-            ? [h('p', { class: 'muted empty' }, 'Not enough liked songs or listening history to suggest playlists yet.')]
+          ? visible.map(({ playlist, facets }) => playlistCard(client, playlist, facets, keptKeys.has(playlist.key), savedMatches.get(playlist.key)))
+          : all.length === 0
+            ? [
+                h(
+                  'p',
+                  { class: 'muted empty' },
+                  cur.savedItems.length > 0
+                    ? 'Every recommendation is already in your Spotify.'
+                    : 'Not enough liked songs or listening history to suggest playlists yet.',
+                ),
+              ]
             : [h('div', { class: 'muted empty' }, h('p', {}, 'None of your recommendations match these filters.'), button('Clear filters', { class: 'ghost small' }, bar.clear))]),
       );
     };
@@ -559,11 +662,38 @@ function createCuratorView(
 
     let heroEl = hero(state, cur.result);
     const bar = browseBar(state, onCriteria);
-    bar.setItems(cur.items);
+    bar.setItems(items());
     syncHomeUrl();
+
+    /** How many recommendations are already saved, with a toggle to list them; or why that is unknown. */
+    const renderSavedLine = () => {
+      const n = cur.savedItems.length;
+      const parts: Child[] = [];
+      if (n > 0) {
+        parts.push(
+          `${n} ${n === 1 ? 'recommendation is' : 'recommendations are'} already in your Spotify${state.showSaved ? ' and marked below' : ' and hidden'}. `,
+          button(state.showSaved ? 'Hide them' : 'Show them', { class: 'link-button', 'aria-pressed': String(state.showSaved) }, () => {
+            state.showSaved = !state.showSaved;
+            bar.setItems(items());
+            renderGrid();
+          }),
+        );
+      }
+      if (state.saved.status === 'needs-consent') {
+        parts.push(
+          'To recognize playlists you saved in earlier sessions, Spotify needs to let this page read your playlists. ',
+          button('Reconnect Spotify', { class: 'link-button' }, async () => location.assign(await auth.authorizeUrl())),
+        );
+      } else if (state.saved.status === 'error') {
+        parts.push(`Could not read your playlists (${state.saved.error}), so recommendations saved in earlier sessions may show again.`);
+      }
+      savedLine.replaceChildren(...parts.filter((c): c is Node | string => !!c));
+      savedLine.hidden = parts.length === 0;
+    };
+
     renderProgress();
     const recurate =
-      cur.items.length > 0 &&
+      cur.shown.length > 0 &&
       button([icon('shuffle'), 'Curate a different set'], { class: 'secondary' }, () => {
         const { curated, shown, keptKeys } = cur;
         recurateDialog(shown, keptKeys, (keep) => {
@@ -591,30 +721,37 @@ function createCuratorView(
             state.variant > 0 && h('span', { class: 'set-label' }, `Set ${state.variant + 1}`),
           ),
           count,
+          savedLine,
         ),
         bar.el,
         grid,
       ),
     );
     renderGrid();
+    fetchNeededTracks(cur);
 
     refresh = () => {
       cur = curateNow();
       const next = hero(state, cur.result);
       heroEl.replaceWith(next);
       heroEl = next;
-      bar.setItems(cur.items);
+      bar.setItems(items());
       syncHomeUrl();
       // Leave the cards alone while one has focus; the next refresh or render catches up.
       if (!grid.contains(document.activeElement)) renderGrid();
+      else renderSavedLine();
+      fetchNeededTracks(cur);
     };
   };
 
   const renderPlaylist = (key: string) => {
     const find = () => {
       const cur = curateNow();
-      const item = cur.items.find((i) => i.playlist.key === key);
-      return { cur, item, signature: item ? trackSignature(item.playlist) : '' };
+      // Saved recommendations keep their page even while hidden from the grid.
+      const item = [...cur.freshItems, ...cur.savedItems].find((i) => i.playlist.key === key);
+      const saved = cur.savedMatches.get(key);
+      fetchNeededTracks(cur);
+      return { cur, item, saved, signature: item ? `${trackSignature(item.playlist)}|${saved?.playlist.id ?? ''}` : '' };
     };
     let shown = find();
     const back = () => backToRecommendations(state.criteria);
@@ -648,7 +785,7 @@ function createCuratorView(
         ),
     };
     const draw = () => {
-      const { cur, item } = shown;
+      const { cur, item, saved } = shown;
       const original = cur.curated.find((p) => p.key === key);
       const byId = new Map(original?.tracks.map((t) => [t.id, t]));
       const removed = removedStore
@@ -661,7 +798,7 @@ function createCuratorView(
           ? playlistPage(
               client,
               item,
-              { artistGenres: cur.artistGenres, trackKeys: state.keys, kept: cur.keptKeys.has(key) },
+              { artistGenres: cur.artistGenres, trackKeys: state.keys, kept: cur.keptKeys.has(key), saved },
               { removed, ...editing },
               back,
             )
@@ -675,7 +812,7 @@ function createCuratorView(
       const next = find();
       const changed = next.signature !== shown.signature;
       shown = next;
-      // Redraw only when the tracks changed (e.g. genres landed), and not under a focused control.
+      // Redraw only when the tracks or saved match changed (e.g. genres landed), and not under a focused control.
       if (changed && !document.activeElement?.matches('#app :is(a, button)')) draw();
     };
   };
@@ -1179,7 +1316,7 @@ function recurateDialog(shown: CuratedPlaylist[], keptKeys: ReadonlySet<string>,
 // ---------------------------------------------------------------------------
 // Playlist cards
 
-function playlistCard(client: SpotifyClient, p: CuratedPlaylist, facets: Browsable['facets'], kept: boolean): HTMLElement {
+function playlistCard(client: SpotifyClient, p: CuratedPlaylist, facets: Browsable['facets'], kept: boolean, saved?: SavedMatch): HTMLElement {
   // The title link covers the whole card (see .card-link in style.css); the create controls sit above it.
   const link = h('a', { class: 'card-link', href: playlistHref(p.key) }, p.name);
   link.addEventListener('click', rememberHomeScroll);
@@ -1187,7 +1324,7 @@ function playlistCard(client: SpotifyClient, p: CuratedPlaylist, facets: Browsab
 
   return h(
     'article',
-    { class: `card kind-${p.kind}` },
+    { class: `card kind-${p.kind}${saved ? ' is-saved' : ''}` },
     h(
       'div',
       { class: 'card-head' },
@@ -1195,7 +1332,7 @@ function playlistCard(client: SpotifyClient, p: CuratedPlaylist, facets: Browsab
       h(
         'div',
         { class: 'card-title' },
-        badges(p, kept),
+        badges(p, kept, !!saved),
         h('h3', {}, link),
         h('div', { class: 'meta' }, `${p.tracks.length} tracks · ${playlistLength(p)}`),
       ),
@@ -1207,13 +1344,19 @@ function playlistCard(client: SpotifyClient, p: CuratedPlaylist, facets: Browsab
       facetChips(facets),
       trackList(p.tracks.slice(0, PREVIEW_COUNT)),
       h('span', { class: 'open-hint', 'aria-hidden': 'true' }, more > 0 ? `See all ${p.tracks.length} tracks →` : 'Open playlist →'),
-      createControls(client, p),
+      createControls(client, p, saved),
     ),
   );
 }
 
-function badges(p: CuratedPlaylist, kept: boolean): HTMLElement {
-  return h('div', { class: 'badges' }, h('span', { class: 'badge' }, KIND_LABEL[p.kind]), kept && h('span', { class: 'badge kept' }, 'Kept'));
+function badges(p: CuratedPlaylist, kept: boolean, saved: boolean): HTMLElement {
+  return h(
+    'div',
+    { class: 'badges' },
+    h('span', { class: 'badge' }, KIND_LABEL[p.kind]),
+    kept && h('span', { class: 'badge kept' }, 'Kept'),
+    saved && h('span', { class: 'badge saved' }, 'In your Spotify'),
+  );
 }
 
 function facetChips(facets: Browsable['facets']): HTMLElement | false {
@@ -1246,7 +1389,7 @@ interface TrackEditing {
 function playlistPage(
   client: SpotifyClient,
   { playlist: p, facets }: Browsable,
-  known: { artistGenres: Record<string, string[]>; trackKeys: Record<string, TrackKey | null>; kept: boolean },
+  known: { artistGenres: Record<string, string[]>; trackKeys: Record<string, TrackKey | null>; kept: boolean; saved?: SavedMatch },
   editing: TrackEditing & { removed: LikedTrack[] },
   onBack: () => void,
 ): HTMLElement {
@@ -1261,7 +1404,7 @@ function playlistPage(
       h(
         'div',
         { class: 'playlist-info' },
-        badges(p, known.kept),
+        badges(p, known.kept, !!known.saved),
         h('h1', { id: 'playlist-title', tabindex: '-1' }, p.name),
         h('p', { class: 'reason' }, p.reason),
         h(
@@ -1271,7 +1414,7 @@ function playlistPage(
           editing.removed.length > 0 && h('span', { class: 'muted' }, ` · ${editing.removed.length} removed`),
         ),
         facetChips(facets),
-        createControls(client, p),
+        createControls(client, p, known.saved),
       ),
     ),
     p.tracks.length > 0
@@ -1438,27 +1581,27 @@ function trackList(tracks: LikedTrack[]): HTMLElement {
   );
 }
 
-function createControls(client: SpotifyClient, p: CuratedPlaylist): HTMLElement {
+function createControls(client: SpotifyClient, p: CuratedPlaylist, saved?: SavedMatch): HTMLElement {
   const box = h('div', { class: 'create' });
   const signature = trackSignature(p);
-  const refresh = () => box.replaceChildren(...createControlsContent(client, p, signature));
+  const refresh = () => box.replaceChildren(...createControlsContent(client, p, signature, saved));
   createControlRefreshers.set(p.key, refresh);
   refresh();
   return box;
 }
 
-function createControlsContent(client: SpotifyClient, p: CuratedPlaylist, signature: string): HTMLElement[] {
+function createControlsContent(client: SpotifyClient, p: CuratedPlaylist, signature: string, saved?: SavedMatch): HTMLElement[] {
   const status = createdStore.status(p.key, signature);
   if (status.kind === 'created') return openLinks(status.playlist);
 
   if (p.tracks.length === 0) return [button('Create in Spotify', { class: 'primary', disabled: '' }, () => {}), h('span', { class: 'status' }, 'No tracks left to create.')];
-  const create = button('Create in Spotify', { class: 'primary' }, () => {
+  const create = button(saved ? 'Create again' : 'Create in Spotify', { class: saved ? 'ghost' : 'primary' }, () => {
     create.disabled = true;
     void createdStore.create(
       p.key,
       signature,
       (onProgress) =>
-        client.createPlaylist(p.name, playlistDescription(p), p.tracks.map((t) => t.uri), (added, total) =>
+        client.createPlaylist(p.name, playlistDescription(p.reason), p.tracks.map((t) => t.uri), (added, total) =>
           onProgress(`Adding tracks… ${added} / ${total}`),
         ),
       p.name,
@@ -1467,6 +1610,15 @@ function createControlsContent(client: SpotifyClient, p: CuratedPlaylist, signat
   if (status.kind === 'creating') {
     create.disabled = true;
     return [create, h('span', { class: 'status' }, status.progress)];
+  }
+  if (saved && !status.error) {
+    const { playlist, by } = saved;
+    return [
+      h('a', { class: 'button primary', href: playlist.url, target: '_blank', rel: 'noopener' }, 'Open in Spotify ↗'),
+      h('a', { class: 'button ghost', href: playlist.uri }, 'Open in app'),
+      create,
+      h('span', { class: 'status' }, by === 'name' ? 'Already in your Spotify.' : `Already in your Spotify as “${playlist.name}” (mostly the same tracks).`),
+    ];
   }
   return [
     create,
@@ -1482,11 +1634,6 @@ function openLinks(playlist: CreatedPlaylist): HTMLElement[] {
     h('a', { class: 'button ghost', href: playlist.uri }, 'Open in app'),
     h('span', { class: 'status' }, 'Created as a private playlist.'),
   ];
-}
-
-function playlistDescription(p: CuratedPlaylist): string {
-  const text = `${p.reason} Curated from Liked Songs.`.replace(/\s+/g, ' ');
-  return text.length <= DESCRIPTION_MAX ? text : `${text.slice(0, DESCRIPTION_MAX - 1)}…`;
 }
 
 void start();

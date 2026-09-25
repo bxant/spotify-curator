@@ -4,12 +4,13 @@
 export const AUTHORIZE_URL = 'https://accounts.spotify.com/authorize';
 export const TOKEN_URL = 'https://accounts.spotify.com/api/token';
 
-/** Only what the app needs: read likes/top/recent, create private playlists. */
+/** Only what the app needs: read likes/top/recent, read and create private playlists. */
 export const SCOPES = [
   'user-library-read',
   'user-top-read',
   'user-read-recently-played',
   'playlist-modify-private',
+  'playlist-read-private',
 ];
 
 const VERIFIER_KEY = 'curator.pkce.verifier';
@@ -30,12 +31,15 @@ export interface StoredToken {
   accessToken: string;
   refreshToken?: string;
   expiresAt: number;
+  /** Space-separated scopes Spotify granted; missing on tokens stored before it was recorded. */
+  scope?: string;
 }
 
 interface TokenResponse {
   access_token: string;
   refresh_token?: string;
   expires_in: number;
+  scope?: string;
 }
 
 export class AuthError extends Error {
@@ -120,6 +124,15 @@ export class SpotifyAuth {
     return this.readToken() !== null;
   }
 
+  /**
+   * Whether the stored token was granted every scope the app asks for now. Tokens
+   * from before a scope was added (or stored without their scopes) need a new sign-in.
+   */
+  hasAllScopes(): boolean {
+    const granted = new Set(this.readToken()?.scope?.split(' ') ?? []);
+    return SCOPES.every((s) => granted.has(s));
+  }
+
   signOut(): void {
     this.config.storage.removeItem(TOKEN_KEY);
   }
@@ -168,6 +181,8 @@ export class SpotifyAuth {
       // Spotify may omit a new refresh token on refresh; keep the old one then.
       refreshToken: json.refresh_token ?? previous?.refreshToken,
       expiresAt: this.now() + json.expires_in * 1000,
+      // A refresh may leave out the scopes; they are unchanged then.
+      scope: json.scope ?? previous?.scope,
     };
     this.config.storage.setItem(TOKEN_KEY, JSON.stringify(token));
     return token.accessToken;
