@@ -64,6 +64,19 @@ describe('CreatedStore', () => {
     expect(store.status('favorites', 'sig')).toEqual({ kind: 'created', playlist: playlist('p2') });
   });
 
+  it('reports progress and errors only for the tracks being created', async () => {
+    const { store } = setup();
+    const run = deferred();
+    const pending = store.create('favorites', 'old', () => run.promise);
+    expect(store.status('favorites', 'old').kind).toBe('creating');
+    expect(store.status('favorites', 'new')).toEqual({ kind: 'idle', error: undefined });
+
+    run.reject(new Error('HTTP 500'));
+    await pending;
+    expect(store.status('favorites', 'old')).toEqual({ kind: 'idle', error: 'HTTP 500' });
+    expect(store.status('favorites', 'new')).toEqual({ kind: 'idle', error: undefined });
+  });
+
   it('does not record a creation that finishes after a reset', async () => {
     const { store, cache } = setup();
     await store.create('decade:1990', 'sig', async () => playlist('old'));

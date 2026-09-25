@@ -110,9 +110,10 @@ function applyTheme(theme: 'light' | 'dark') {
 }
 
 function themeToggle(): HTMLElement {
-  const next = () => (savedTheme() === 'dark' ? 'light' : 'dark');
+  const current = () => (document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+  const next = () => (current() === 'dark' ? 'light' : 'dark');
   const label = () => `Switch to ${next()} theme`;
-  const el = button(icon(savedTheme() === 'dark' ? 'sun' : 'moon'), { class: 'icon-button', 'aria-label': label(), title: label() }, () => {
+  const el = button(icon(current() === 'dark' ? 'sun' : 'moon'), { class: 'icon-button', 'aria-label': label(), title: label() }, () => {
     const theme = next();
     try {
       localStorage.setItem(THEME_KEY, theme);

@@ -33,30 +33,32 @@ export class CreatedStore {
   ) {}
 
   status(key: string, signature: string): CreateStatus {
-    const progress = this.inFlight.get(key);
+    const flightKey = inFlightKey(key, signature);
+    const progress = this.inFlight.get(flightKey);
     if (progress !== undefined) return { kind: 'creating', progress };
     const entry = this.entries(key).find((e) => e.signature === signature);
     if (entry) {
       return { kind: 'created', playlist: toPlaylist(entry) };
     }
-    return { kind: 'idle', error: this.errors.get(key) };
+    return { kind: 'idle', error: this.errors.get(flightKey) };
   }
 
-  /** Starts a creation unless one for `key` is already running. */
+  /** Starts a creation unless one for `key` with these tracks is already running. */
   async create(
     key: string,
     signature: string,
     run: (onProgress: (message: string) => void) => Promise<CreatedPlaylist>,
     name?: string,
   ): Promise<void> {
-    if (this.inFlight.has(key)) return;
+    const flightKey = inFlightKey(key, signature);
+    if (this.inFlight.has(flightKey)) return;
     const epoch = this.epoch;
-    this.errors.delete(key);
-    this.inFlight.set(key, 'Creating playlist…');
+    this.errors.delete(flightKey);
+    this.inFlight.set(flightKey, 'Creating playlist…');
     this.onChange(key);
     try {
       const playlist = await run((message) => {
-        this.inFlight.set(key, message);
+        this.inFlight.set(flightKey, message);
         this.onChange(key);
       });
       if (epoch === this.epoch) {
@@ -64,9 +66,9 @@ export class CreatedStore {
         this.cache.set(CREATED_KEY, { ...this.finished(), [key]: [...this.entries(key), entry] });
       }
     } catch (err) {
-      if (epoch === this.epoch) this.errors.set(key, err instanceof Error ? err.message : String(err));
+      if (epoch === this.epoch) this.errors.set(flightKey, err instanceof Error ? err.message : String(err));
     } finally {
-      this.inFlight.delete(key);
+      this.inFlight.delete(flightKey);
       this.onChange(key);
     }
   }
@@ -94,6 +96,10 @@ export class CreatedStore {
   private finished(): Record<string, CreatedEntry[] | CreatedEntry> {
     return this.cache.get<Record<string, CreatedEntry[] | CreatedEntry>>(CREATED_KEY) ?? {};
   }
+}
+
+function inFlightKey(key: string, signature: string): string {
+  return `${key}\n${signature}`;
 }
 
 function toPlaylist(entry: CreatedEntry): CreatedPlaylist {
