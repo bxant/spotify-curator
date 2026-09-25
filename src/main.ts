@@ -2,7 +2,18 @@ import './style.css';
 import { AuthError, SpotifyAuth } from './auth';
 import { browse, filterOptions, playlistFacets, type BrowseCriteria, type Browsable, type SortOrder } from './browse';
 import { REDIRECT_URI, configuredClientId } from './config';
-import { curate, keepSelected, mergeGenres, trackSignature, withKept, type CurationResult } from './curate';
+import {
+  camelot,
+  curate,
+  keepSelected,
+  keyName,
+  mergeGenres,
+  releaseYear,
+  trackGenres,
+  trackSignature,
+  withKept,
+  type CurationResult,
+} from './curate';
 import {
   artistsToMatch,
   cachedMusicBrainz,
@@ -16,8 +27,10 @@ import {
 } from './library';
 import { MusicBrainzClient, type ArtistGenreMatch } from './musicbrainz';
 import { ReccoBeatsClient } from './reccobeats';
+import { homeHref, parseRoute, playlistHref, type Route } from './route';
 import { SessionCache, browserCache } from './session-cache';
 import { CreatedStore } from './created-store';
+import { RemovedStore } from './removed-store';
 import { SpotifyClient, type CreatedPlaylist } from './spotify';
 import type { CuratedPlaylist, LikedTrack, PlaylistKind, TrackKey } from './types';
 
@@ -34,6 +47,8 @@ const createdStore = new CreatedStore(cache, (key) => {
   createdListRefresher?.();
 });
 let createdListRefresher: (() => void) | undefined;
+/** Tracks the owner removed from recommendations; every view and Create use the edited lists. */
+const removedStore = new RemovedStore(cache);
 
 /** Playlist description limit on Spotify. */
 const DESCRIPTION_MAX = 300;
@@ -49,7 +64,65 @@ let lookups = new AbortController();
 function nextGeneration(): number {
   lookups.abort();
   lookups = new AbortController();
+  activeView = undefined;
   return ++generation;
+}
+
+// ---------------------------------------------------------------------------
+// Routing: the recommendations (#/, with sort and filters in the query) and one
+// page per playlist (#/playlist/<key>). See src/route.ts.
+
+let route: Route = parseRoute(location.hash);
+/** Scroll position of the recommendations when a playlist was opened, for the return trip. */
+let homeScrollY = 0;
+/** The playlist whose page was open last, so its card gets focus on the way back. */
+let lastPlaylistKey: string | undefined;
+/** The signed-in page, which redraws itself for the current route. */
+let activeView: { navigate: (from: Route) => void } | undefined;
+
+window.addEventListener('hashchange', () => {
+  const from = route;
+  route = parseRoute(location.hash);
+  // Marks a playlist page opened from the recommendations, so Back can step back to them
+  // (with their sort, filters and scroll) even after a reload.
+  if (route.name === 'playlist') mergeHistoryState({ fromHome: from.name === 'home' });
+  activeView?.navigate(from);
+});
+
+interface EntryState {
+  /** Scroll position of the recommendations when a playlist was opened from them. */
+  scrollY?: number;
+  /** This playlist page was opened from the recommendations entry right before it. */
+  fromHome?: boolean;
+}
+
+function historyState(): EntryState {
+  const state: unknown = history.state;
+  return state && typeof state === 'object' ? (state as EntryState) : {};
+}
+
+function mergeHistoryState(patch: EntryState) {
+  try {
+    history.replaceState({ ...historyState(), ...patch }, '');
+  } catch {
+    // Not remembered across reloads; the page still works for this visit.
+  }
+}
+
+/** Remembers where the recommendations were scrolled to, in this history entry too so it survives a reload. */
+function rememberHomeScroll() {
+  homeScrollY = window.scrollY;
+  mergeHistoryState({ scrollY: homeScrollY });
+}
+
+function savedHomeScroll(): number {
+  return historyState().scrollY ?? homeScrollY;
+}
+
+/** Back to the recommendations: a real history step when they are the previous page, else a new one. */
+function backToRecommendations(criteria: BrowseCriteria) {
+  if (historyState().fromHome) history.back();
+  else location.hash = homeHref(criteria);
 }
 
 type Child = Node | string | null | undefined | false;
@@ -69,6 +142,9 @@ const ICONS = {
   check: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17Z',
   sun: 'M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10ZM2 13h2v-2H2v2Zm18 0h2v-2h-2v2ZM11 2v2h2V2h-2Zm0 18v2h2v-2h-2ZM5.99 4.58 4.58 5.99l1.41 1.42L7.41 6 5.99 4.58Zm12.02 12.03-1.41 1.41 1.41 1.42 1.42-1.42-1.42-1.41ZM19.42 6 18 4.58 16.59 6 18 7.41 19.42 6ZM7.41 18.01 6 16.59l-1.42 1.42L6 19.42l1.41-1.41Z',
   moon: 'M12.3 22a10 10 0 0 1-2.9-19.57A8 8 0 0 0 21.57 14.6 10 10 0 0 1 12.3 22Z',
+  back: 'M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2Z',
+  filter: 'M10 18h4v-2h-4v2ZM3 6v2h18V6H3Zm3 7h12v-2H6v2Z',
+  close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41Z',
 } as const;
 
 function icon(name: keyof typeof ICONS): SVGElement {
@@ -134,6 +210,8 @@ function themeToggle(): HTMLElement {
 
 async function start() {
   applyTheme(savedTheme());
+  // The page restores the recommendations' scroll itself once they are drawn again.
+  history.scrollRestoration = 'manual';
   // Spotify only accepts the 127.0.0.1 redirect URI; keep the whole session on
   // that origin so the PKCE verifier in sessionStorage is found on return.
   if (location.hostname === 'localhost') {
@@ -253,6 +331,13 @@ interface CuratorState {
 }
 
 const DEFAULT_CRITERIA: BrowseCriteria = { sort: 'recommended' };
+/** Session cache key for the current set and kept suggestions, so a reload shows the same playlists. */
+const SET_KEY = 'set';
+
+interface SavedSet {
+  variant: number;
+  kept: CuratedPlaylist[];
+}
 
 async function showCurator(auth: SpotifyAuth, forceReload = false) {
   const current = nextGeneration();
@@ -284,6 +369,9 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
   }
 
   if (current !== generation) return;
+  // Refresh data goes back to the default set.
+  if (forceReload) cache.set(SET_KEY, null);
+  const saved = cache.get<SavedSet>(SET_KEY);
   const state: CuratorState = {
     library,
     genres: cache.get<Record<string, string[]>>('genres') ?? {},
@@ -293,9 +381,9 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
     genreProgress: '',
     keyRun: { running: false, done: 0, total: 0 },
     mbRun: { running: false, done: 0, total: 0 },
-    variant: 0,
-    kept: [],
-    criteria: { ...DEFAULT_CRITERIA },
+    variant: saved?.variant ?? 0,
+    kept: saved?.kept ?? [],
+    criteria: route.name === 'home' ? { ...route.criteria } : { ...DEFAULT_CRITERIA },
   };
 
   /** A signal that aborts on a new page load or when the owner clicks Stop. */
@@ -360,6 +448,7 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
   };
 
   const view = createCuratorView(auth, client, state, () => current === generation, { findKeys, findGenres });
+  activeView = view;
   view.render();
 
   // Re-curate when genres finish so genre playlists appear.
@@ -415,74 +504,93 @@ function createCuratorView(
       (state.mbRun.etaSeconds ? ` · about ${duration(state.mbRun.etaSeconds)} left` : '');
   };
 
+  const curateNow = () => {
+    const mbGenres = musicBrainzGenres(state.musicBrainz);
+    const result = curate(state.library.liked, state.library.history, {
+      now: new Date(),
+      artistGenres: state.genres,
+      musicBrainzGenres: mbGenres,
+      trackKeys: state.keys,
+      variant: state.variant,
+    });
+    /** As curated (kept suggestions carry these, so a removal can still be undone after a new set). */
+    const curated = withKept(state.kept, result.playlists);
+    /** As shown and created: without the tracks the owner removed. */
+    const shown = curated.map((p) => removedStore.apply(p));
+    const artistGenres = mergeGenres(state.genres, mbGenres);
+    const facetInputs = { artistGenres, trackKeys: state.keys };
+    const items: Browsable[] = shown.map((playlist) => ({ playlist, facets: playlistFacets(playlist, facetInputs) }));
+    return { result, curated, shown, items, artistGenres, keptKeys: new Set(state.kept.map((p) => p.key)) };
+  };
+
   /** Refreshes the suggestions of the current page in place; set by each full render. */
   let refresh = () => {};
 
-  const render = () => {
-    if (!isCurrent()) return;
-    const curateNow = () => {
-      const mbGenres = musicBrainzGenres(state.musicBrainz);
-      const result = curate(state.library.liked, state.library.history, {
-        now: new Date(),
-        artistGenres: state.genres,
-        musicBrainzGenres: mbGenres,
-        trackKeys: state.keys,
-        variant: state.variant,
-      });
-      const shown = withKept(state.kept, result.playlists);
-      const facetInputs = { artistGenres: mergeGenres(state.genres, mbGenres), trackKeys: state.keys };
-      const items: Browsable[] = shown.map((playlist) => ({ playlist, facets: playlistFacets(playlist, facetInputs) }));
-      return { result, shown, items, keptKeys: new Set(state.kept.map((p) => p.key)) };
-    };
+  /** Keeps the address bar in step with the sort and filters, without adding history entries. */
+  const syncHomeUrl = () => {
+    if (route.name !== 'home') return;
+    const href = homeHref(state.criteria);
+    if (location.hash !== href && !(location.hash === '' && href === '#/')) history.replaceState(history.state, '', href);
+    route = { name: 'home', criteria: { ...state.criteria } };
+  };
+
+  const renderHome = () => {
     let cur = curateNow();
 
-    // Keep expanded track lists open across re-renders.
-    const openKeys = (root: ParentNode) =>
-      new Set([...root.querySelectorAll<HTMLDetailsElement>('details[open]')].map((d) => d.dataset.key ?? ''));
-    const wasOpen = openKeys(app);
-
     const grid = h('div', { class: 'grid' });
-    const count = h('p', { class: 'muted small', role: 'status' });
+    const count = h('p', { class: 'recs-count', role: 'status' });
     const renderGrid = () => {
       const { items, keptKeys } = cur;
-      const open = grid.hasChildNodes() ? openKeys(grid) : wasOpen;
       const visible = browse(items, state.criteria);
       count.textContent =
-        visible.length === items.length
-          ? `${items.length} suggestions`
-          : `Showing ${visible.length} of ${items.length} suggestions`;
+        visible.length === items.length ? `All ${items.length} playlists` : `${visible.length} of ${items.length} playlists`;
       grid.replaceChildren(
         ...(visible.length > 0
-          ? visible.map(({ playlist, facets }) => playlistCard(client, playlist, facets, open.has(playlist.key), keptKeys.has(playlist.key)))
-          : [h('p', { class: 'muted empty' }, items.length === 0 ? 'Not enough liked songs or listening history to suggest playlists yet.' : 'No suggestions match these filters.')]),
+          ? visible.map(({ playlist, facets }) => playlistCard(client, playlist, facets, keptKeys.has(playlist.key)))
+          : items.length === 0
+            ? [h('p', { class: 'muted empty' }, 'Not enough liked songs or listening history to suggest playlists yet.')]
+            : [h('div', { class: 'muted empty' }, h('p', {}, 'None of your recommendations match these filters.'), button('Clear filters', { class: 'ghost small' }, bar.clear))]),
       );
+    };
+    const onCriteria = () => {
+      syncHomeUrl();
+      renderGrid();
     };
 
     let heroEl = hero(state, cur.result);
-    const bar = browseBar(state, renderGrid);
+    const bar = browseBar(state, onCriteria);
     bar.setItems(cur.items);
+    syncHomeUrl();
     renderProgress();
+    const recurate =
+      cur.items.length > 0 &&
+      button([icon('shuffle'), 'Curate a different set'], { class: 'secondary' }, () => {
+        const { curated, shown, keptKeys } = cur;
+        recurateDialog(shown, keptKeys, (keep) => {
+          state.kept = keepSelected(curated, keep);
+          state.variant++;
+          cache.set(SET_KEY, { variant: state.variant, kept: state.kept } satisfies SavedSet);
+          render();
+        });
+      });
     show(
       topBar(auth),
       heroEl,
       createdList(),
-      enrichSection(state, cur.result, live, actions),
+      curationSection(state, cur.result, live, actions, recurate),
       h(
         'section',
-        { class: 'suggestions', 'aria-labelledby': 'suggestions-title' },
+        { class: 'recs', 'aria-labelledby': 'recs-title' },
         h(
           'div',
-          { class: 'section-head' },
-          h('div', {}, h('h2', { id: 'suggestions-title' }, state.variant === 0 ? 'Suggested playlists' : `Suggested playlists · set ${state.variant + 1}`), count),
-          cur.items.length > 0 &&
-            button([icon('shuffle'), 'Curate a different set'], { class: 'secondary' }, () => {
-              const { shown, keptKeys } = cur;
-              recurateDialog(shown, keptKeys, (keep) => {
-                state.kept = keepSelected(shown, keep);
-                state.variant++;
-                render();
-              });
-            }),
+          { class: 'recs-head' },
+          h(
+            'h2',
+            { id: 'recs-title' },
+            'Your recommendations',
+            state.variant > 0 && h('span', { class: 'set-label' }, `Set ${state.variant + 1}`),
+          ),
+          count,
         ),
         bar.el,
         grid,
@@ -496,9 +604,86 @@ function createCuratorView(
       heroEl.replaceWith(next);
       heroEl = next;
       bar.setItems(cur.items);
+      syncHomeUrl();
       // Leave the cards alone while one has focus; the next refresh or render catches up.
       if (!grid.contains(document.activeElement)) renderGrid();
     };
+  };
+
+  const renderPlaylist = (key: string) => {
+    const find = () => {
+      const cur = curateNow();
+      const item = cur.items.find((i) => i.playlist.key === key);
+      return { cur, item, signature: item ? trackSignature(item.playlist) : '' };
+    };
+    let shown = find();
+    const back = () => backToRecommendations(state.criteria);
+    const edit = (change: () => void, focus: () => HTMLElement | null | undefined) => {
+      change();
+      shown = find();
+      draw();
+      (focus() ?? app.querySelector<HTMLElement>('.playlist-page h1'))?.focus();
+    };
+    const removeButton = (id: string) => app.querySelector<HTMLElement>(`button[data-remove="${CSS.escape(id)}"]`);
+    const editing: TrackEditing = {
+      remove: (t) => {
+        // Focus moves to the track that takes its place, so several can be removed in a row.
+        const tracks = shown.item?.playlist.tracks ?? [];
+        const i = tracks.findIndex((x) => x.id === t.id);
+        const neighbour = tracks[i + 1] ?? tracks[i - 1];
+        edit(
+          () => removedStore.remove(key, t.id),
+          () => (neighbour ? removeButton(neighbour.id) : app.querySelector<HTMLElement>('.removed-tracks li button')),
+        );
+      },
+      restore: (t) =>
+        edit(
+          () => removedStore.restore(key, t.id),
+          () => removeButton(t.id),
+        ),
+      restoreAll: () =>
+        edit(
+          () => removedStore.restoreAll(key),
+          () => null,
+        ),
+    };
+    const draw = () => {
+      const { cur, item } = shown;
+      const original = cur.curated.find((p) => p.key === key);
+      const byId = new Map(original?.tracks.map((t) => [t.id, t]));
+      const removed = removedStore
+        .removed(key)
+        .map((id) => byId.get(id))
+        .filter((t): t is LikedTrack => !!t);
+      show(
+        topBar(auth),
+        item
+          ? playlistPage(
+              client,
+              item,
+              { artistGenres: cur.artistGenres, trackKeys: state.keys, kept: cur.keptKeys.has(key) },
+              { removed, ...editing },
+              back,
+            )
+          : missingPlaylistPage(state, back),
+      );
+    };
+    draw();
+    lastPlaylistKey = key;
+
+    refresh = () => {
+      const next = find();
+      const changed = next.signature !== shown.signature;
+      shown = next;
+      // Redraw only when the tracks changed (e.g. genres landed), and not under a focused control.
+      if (changed && !document.activeElement?.matches('#app :is(a, button)')) draw();
+    };
+  };
+
+  const render = () => {
+    if (!isCurrent()) return;
+    if (route.name === 'playlist') renderPlaylist(route.key);
+    else renderHome();
   };
 
   /** Mid-lookup redraw: progress and suggestions only, so open selects and focus survive. */
@@ -508,7 +693,25 @@ function createCuratorView(
     refresh();
   };
 
-  return { render, renderProgress, update };
+  /** Draws the page for a new route, restoring the recommendations as the owner left them. */
+  const navigate = (from: Route) => {
+    if (!isCurrent()) return;
+    if (route.name === 'home') {
+      state.criteria = { ...route.criteria };
+      render();
+      // Only the query changed (typed or pasted): stay where the page is.
+      if (from.name === 'home') return;
+      window.scrollTo(0, savedHomeScroll());
+      const card = lastPlaylistKey && app.querySelector<HTMLAnchorElement>(`a.card-link[href="${CSS.escape(playlistHref(lastPlaylistKey))}"]`);
+      if (card) card.focus({ preventScroll: true });
+      return;
+    }
+    render();
+    window.scrollTo(0, 0);
+    app.querySelector<HTMLElement>('.playlist-page h1')?.focus({ preventScroll: true });
+  };
+
+  return { render, renderProgress, update, navigate };
 }
 
 function setBar(bar: HTMLProgressElement, run: LookupRun) {
@@ -621,13 +824,15 @@ function createdList(): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// Enrichment: the two opt-in lookups that send data to outside services.
+// Curation: what changes the recommendations themselves — a different set, and
+// the two opt-in lookups that send data to outside services.
 
-function enrichSection(
+function curationSection(
   state: CuratorState,
   result: CurationResult,
   live: { spotifyGenres: HTMLElement; keyBar: HTMLProgressElement; keyText: HTMLElement; mbBar: HTMLProgressElement; mbText: HTMLElement },
   actions: Actions,
+  recurate: HTMLElement | false,
 ): HTMLElement {
   const liked = state.library.liked;
   const s = result.stats;
@@ -677,11 +882,27 @@ function enrichSection(
 
   return h(
     'section',
-    { class: 'enrich', 'aria-labelledby': 'enrich-title' },
-    h('h2', { id: 'enrich-title' }, 'Make the suggestions smarter'),
+    { class: 'curation', 'aria-labelledby': 'curation-title' },
+    h(
+      'div',
+      { class: 'section-head' },
+      h(
+        'div',
+        {},
+        h('div', { class: 'eyebrow muted' }, 'Curation'),
+        h('h2', { id: 'curation-title' }, 'Change what gets recommended'),
+        h(
+          'p',
+          { class: 'muted' },
+          'Playlists are picked from your Liked Songs and listening history. Curate a different set for new picks, or add musical keys and genres for more kinds of playlists.',
+        ),
+      ),
+      recurate,
+    ),
+    h('h3', { class: 'enrich-title' }, 'Make the suggestions smarter'),
     h(
       'p',
-      { class: 'muted' },
+      { class: 'muted enrich-intro' },
       'Spotify no longer gives new apps musical keys and has deprecated artist genres. These optional lookups fill the gaps from free outside services. ',
       'Nothing is sent to them until you click.',
     ),
@@ -726,7 +947,7 @@ function enrichCard(c: {
       'div',
       { class: 'enrich-head' },
       h('span', { class: 'enrich-icon', 'aria-hidden': 'true' }, icon(c.icon)),
-      h('div', {}, h('h3', {}, c.title), h('div', { class: 'muted small' }, `via ${c.service}`)),
+      h('div', {}, h('h4', {}, c.title), h('div', { class: 'muted small' }, `via ${c.service}`)),
     ),
     h('p', {}, c.what),
     h('p', { class: 'sends small' }, h('strong', {}, 'What is shared: '), c.sends),
@@ -769,7 +990,8 @@ const SORT_LABEL: Record<SortOrder, string> = {
 
 const SIZE_OPTIONS = [25, 50, 100];
 
-function browseBar(state: CuratorState, onChange: () => void): { el: HTMLElement; setItems: (items: Browsable[]) => void } {
+/** Sort and filter toolbar of the recommendations grid: it narrows what is shown and never curates. */
+function browseBar(state: CuratorState, onChange: () => void): { el: HTMLElement; setItems: (items: Browsable[]) => void; clear: () => void } {
   const c = state.criteria;
   let options = filterOptions([]);
 
@@ -812,17 +1034,25 @@ function browseBar(state: CuratorState, onChange: () => void): { el: HTMLElement
   const n = (count: number) => ` (${count})`;
   const filtering = () => !!(c.kind || c.decade != null || c.genre || c.key || c.artist || c.minTracks);
 
-  const clear = button('Clear filters', { class: 'ghost small' }, () => {
+  const clearFilters = () => {
     Object.assign(c, { kind: '', decade: null, genre: '', key: '', artist: '', minTracks: 0 });
     for (const el of controls) if (el.name !== 'sort') el.value = '';
     clear.hidden = true;
     onChange();
-  });
+  };
+  const clear = button('Clear filters', { class: 'ghost small' }, clearFilters);
 
   const el = h(
     'div',
-    { class: 'browse', role: 'group', 'aria-label': 'Sort and filter suggestions' },
-    field(
+    { class: 'browse', role: 'group', 'aria-labelledby': 'browse-title', 'aria-describedby': 'browse-note' },
+    h(
+      'div',
+      { class: 'browse-label' },
+      h('span', { class: 'browse-title', id: 'browse-title' }, icon('filter'), 'Sort & filter these playlists'),
+      h('span', { class: 'muted small', id: 'browse-note' }, 'Only changes which recommendations are shown here. It doesn’t create new playlists.'),
+      clear,
+    ),
+    h('div', { class: 'browse-fields' }, field(
       'Sort by',
       select(
         'sort',
@@ -856,8 +1086,7 @@ function browseBar(state: CuratorState, onChange: () => void): { el: HTMLElement
     field(
       'Size',
       select('size', () => SIZE_OPTIONS.map((s) => ({ value: String(s), label: `${s}+ tracks` })), () => (c.minTracks ? String(c.minTracks) : ''), (v) => (c.minTracks = Number(v) || 0), 'Any size'),
-    ),
-    clear,
+    )),
   );
 
   const setItems = (items: Browsable[]) => {
@@ -871,7 +1100,7 @@ function browseBar(state: CuratorState, onChange: () => void): { el: HTMLElement
     for (const fill of fills) fill();
     clear.hidden = !filtering();
   };
-  return { el, setItems };
+  return { el, setItems, clear: clearFilters };
 }
 
 // ---------------------------------------------------------------------------
@@ -950,27 +1179,11 @@ function recurateDialog(shown: CuratedPlaylist[], keptKeys: ReadonlySet<string>,
 // ---------------------------------------------------------------------------
 // Playlist cards
 
-function playlistCard(
-  client: SpotifyClient,
-  p: CuratedPlaylist,
-  facets: Browsable['facets'],
-  open: boolean,
-  kept: boolean,
-): HTMLElement {
-  const minutes = Math.round(p.tracks.reduce((sum, t) => sum + t.durationMs, 0) / 60_000);
-  const length = minutes >= 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes} min`;
-  const rest = p.tracks.slice(PREVIEW_COUNT);
-  const details = rest.length > 0 ? (h('details', { 'data-key': p.key }) as HTMLDetailsElement) : null;
-  if (details) {
-    details.open = open;
-    details.append(h('summary', {}, `Show all ${p.tracks.length} tracks`), trackList(rest));
-  }
-
-  const chips = [
-    ...(facets.decade != null ? [`${facets.decade}s`] : []),
-    ...facets.genres.slice(0, 3),
-    ...facets.keys.slice(0, 1).map((k) => k.label),
-  ];
+function playlistCard(client: SpotifyClient, p: CuratedPlaylist, facets: Browsable['facets'], kept: boolean): HTMLElement {
+  // The title link covers the whole card (see .card-link in style.css); the create controls sit above it.
+  const link = h('a', { class: 'card-link', href: playlistHref(p.key) }, p.name);
+  link.addEventListener('click', rememberHomeScroll);
+  const more = p.tracks.length - PREVIEW_COUNT;
 
   return h(
     'article',
@@ -982,19 +1195,208 @@ function playlistCard(
       h(
         'div',
         { class: 'card-title' },
-        h('div', { class: 'badges' }, h('span', { class: 'badge' }, KIND_LABEL[p.kind]), kept && h('span', { class: 'badge kept' }, 'Kept')),
-        h('h3', {}, p.name),
-        h('div', { class: 'meta' }, `${p.tracks.length} tracks · ${length}`),
+        badges(p, kept),
+        h('h3', {}, link),
+        h('div', { class: 'meta' }, `${p.tracks.length} tracks · ${playlistLength(p)}`),
       ),
     ),
     h(
       'div',
       { class: 'card-body' },
       h('p', { class: 'reason' }, p.reason),
-      chips.length > 0 && h('ul', { class: 'chips', 'aria-label': 'Describes' }, ...chips.map((c) => h('li', {}, c))),
+      facetChips(facets),
       trackList(p.tracks.slice(0, PREVIEW_COUNT)),
-      details,
+      h('span', { class: 'open-hint', 'aria-hidden': 'true' }, more > 0 ? `See all ${p.tracks.length} tracks →` : 'Open playlist →'),
       createControls(client, p),
+    ),
+  );
+}
+
+function badges(p: CuratedPlaylist, kept: boolean): HTMLElement {
+  return h('div', { class: 'badges' }, h('span', { class: 'badge' }, KIND_LABEL[p.kind]), kept && h('span', { class: 'badge kept' }, 'Kept'));
+}
+
+function facetChips(facets: Browsable['facets']): HTMLElement | false {
+  const chips = [
+    ...(facets.decade != null ? [`${facets.decade}s`] : []),
+    ...facets.genres.slice(0, 3),
+    ...facets.keys.slice(0, 1).map((k) => k.label),
+  ];
+  return chips.length > 0 && h('ul', { class: 'chips', 'aria-label': 'Describes' }, ...chips.map((c) => h('li', {}, c)));
+}
+
+function playlistLength(p: CuratedPlaylist): string {
+  const minutes = Math.round(p.tracks.reduce((sum, t) => sum + t.durationMs, 0) / 60_000);
+  return minutes >= 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes} min`;
+}
+
+// ---------------------------------------------------------------------------
+// Playlist page (#/playlist/<key>)
+
+function backButton(onBack: () => void): HTMLElement {
+  return h('nav', { class: 'page-nav', 'aria-label': 'Playlist' }, button([icon('back'), 'Back to recommendations'], { class: 'ghost' }, onBack));
+}
+
+interface TrackEditing {
+  remove: (t: LikedTrack) => void;
+  restore: (t: LikedTrack) => void;
+  restoreAll: () => void;
+}
+
+function playlistPage(
+  client: SpotifyClient,
+  { playlist: p, facets }: Browsable,
+  known: { artistGenres: Record<string, string[]>; trackKeys: Record<string, TrackKey | null>; kept: boolean },
+  editing: TrackEditing & { removed: LikedTrack[] },
+  onBack: () => void,
+): HTMLElement {
+  return h(
+    'article',
+    { class: 'playlist-page', 'aria-labelledby': 'playlist-title' },
+    backButton(onBack),
+    h(
+      'header',
+      { class: 'playlist-hero' },
+      cover(p),
+      h(
+        'div',
+        { class: 'playlist-info' },
+        badges(p, known.kept),
+        h('h1', { id: 'playlist-title', tabindex: '-1' }, p.name),
+        h('p', { class: 'reason' }, p.reason),
+        h(
+          'div',
+          { class: 'meta' },
+          `${p.tracks.length} tracks · ${playlistLength(p)}`,
+          editing.removed.length > 0 && h('span', { class: 'muted' }, ` · ${editing.removed.length} removed`),
+        ),
+        facetChips(facets),
+        createControls(client, p),
+      ),
+    ),
+    p.tracks.length > 0
+      ? trackTable(p.tracks, known, editing.remove)
+      : h('p', { class: 'muted empty' }, 'You removed every track from this playlist. Restore some below to create it.'),
+    editing.removed.length > 0 && removedTracks(editing),
+  );
+}
+
+/** The tracks removed from this playlist, each one a click away from coming back. */
+function removedTracks(editing: TrackEditing & { removed: LikedTrack[] }): HTMLElement {
+  return h(
+    'section',
+    { class: 'removed-tracks', 'aria-labelledby': 'removed-title' },
+    h(
+      'div',
+      { class: 'removed-head' },
+      h('h2', { id: 'removed-title' }, `Removed from this playlist (${editing.removed.length})`),
+      button('Restore all', { class: 'ghost small' }, editing.restoreAll),
+    ),
+    h(
+      'ul',
+      {},
+      ...editing.removed.map((t) =>
+        h(
+          'li',
+          {},
+          h('div', { class: 't' }, h('div', { class: 'name' }, t.name), h('div', { class: 'sub' }, t.artists.map((a) => a.name).join(', '))),
+          button('Restore', { class: 'ghost small', 'aria-label': `Restore ${t.name}` }, () => editing.restore(t)),
+        ),
+      ),
+    ),
+  );
+}
+
+function missingPlaylistPage(state: CuratorState, onBack: () => void): HTMLElement {
+  const loading = !!state.genreProgress || state.mbRun.running || state.keyRun.running;
+  return h(
+    'section',
+    { class: 'playlist-page' },
+    backButton(onBack),
+    h(
+      'div',
+      { class: 'panel missing' },
+      h('h1', { tabindex: '-1' }, 'This playlist isn’t in your recommendations right now'),
+      h(
+        'p',
+        { class: 'muted' },
+        loading
+          ? 'Genres or keys are still loading, and it may appear when they finish.'
+          : 'It may have been part of a different set, or your library changed since the link was made.',
+      ),
+    ),
+  );
+}
+
+function trackTable(
+  tracks: LikedTrack[],
+  known: { artistGenres: Record<string, string[]>; trackKeys: Record<string, TrackKey | null> },
+  onRemove: (t: LikedTrack) => void,
+): HTMLElement {
+  const rows = tracks.map((t) => {
+    const key = known.trackKeys[t.id];
+    return {
+      t,
+      year: releaseYear(t),
+      key: key ? `${keyName(key)} · ${camelot(key)}` : '',
+      genres: [...trackGenres(t, known.artistGenres)].slice(0, 2).join(', '),
+    };
+  });
+  const hasKey = rows.some((r) => r.key);
+  const hasGenre = rows.some((r) => r.genres);
+  const cell = (cls: string, ...children: Child[]) => h('td', { class: cls }, ...children);
+  return h(
+    'table',
+    { class: 'track-table' },
+    h(
+      'thead',
+      {},
+      h(
+        'tr',
+        {},
+        h('th', { class: 'col-n', scope: 'col' }, '#'),
+        h('th', { class: 'col-title', scope: 'col' }, 'Title'),
+        h('th', { class: 'col-album', scope: 'col' }, 'Album'),
+        h('th', { class: 'col-year', scope: 'col' }, 'Year'),
+        hasKey && h('th', { class: 'col-key', scope: 'col' }, 'Key'),
+        hasGenre && h('th', { class: 'col-genre', scope: 'col' }, 'Genre'),
+        h('th', { class: 'col-remove' }, h('span', { class: 'visually-hidden' }, 'Remove')),
+      ),
+    ),
+    h(
+      'tbody',
+      {},
+      ...rows.map(({ t, year, key, genres }, i) =>
+        h(
+          'tr',
+          {},
+          cell('col-n', String(i + 1)),
+          cell(
+            'col-title',
+            h(
+              'div',
+              { class: 'title-cell' },
+              t.album.imageUrl ? h('img', { src: t.album.imageUrl, alt: '', loading: 'lazy' }) : h('div', { class: 'noart' }),
+              h(
+                'div',
+                { class: 't' },
+                h('div', { class: 'name', title: t.name }, t.name),
+                h('div', { class: 'sub' }, t.artists.map((a) => a.name).join(', '), h('span', { class: 'narrow-album' }, ` · ${t.album.name}`)),
+              ),
+            ),
+          ),
+          cell('col-album', t.album.name),
+          cell('col-year', year === null ? '' : String(year)),
+          hasKey && cell('col-key', key),
+          hasGenre && cell('col-genre', genres),
+          cell(
+            'col-remove',
+            button(icon('close'), { class: 'icon-button remove', 'data-remove': t.id, 'aria-label': `Remove ${t.name} from this playlist`, title: 'Remove from this playlist' }, () =>
+              onRemove(t),
+            ),
+          ),
+        ),
+      ),
     ),
   );
 }
@@ -1049,6 +1451,7 @@ function createControlsContent(client: SpotifyClient, p: CuratedPlaylist, signat
   const status = createdStore.status(p.key, signature);
   if (status.kind === 'created') return openLinks(status.playlist);
 
+  if (p.tracks.length === 0) return [button('Create in Spotify', { class: 'primary', disabled: '' }, () => {}), h('span', { class: 'status' }, 'No tracks left to create.')];
   const create = button('Create in Spotify', { class: 'primary' }, () => {
     create.disabled = true;
     void createdStore.create(

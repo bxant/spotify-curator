@@ -6,7 +6,11 @@ It runs only on your machine at http://127.0.0.1:8888, in a Spotify-style dark t
 
 ## Suggested playlists
 
-The page shows your Spotify profile, a few library stats, and one card per suggestion with album-art, its name, the reason for it, the track count, what it covers (decade, genres, key), and a track preview. **Create in Spotify** creates a private playlist, adds the tracks 100 at a time, and then links to it on open.spotify.com and in the Spotify app. If the suggestion's tracks change later (for example when genres finish loading) or you click **Refresh data**, the card offers **Create in Spotify** again.
+The page shows your Spotify profile, a few library stats, and under **Your recommendations** one card per suggestion with album-art, its name, the reason for it, the track count, what it covers (decade, genres, key), and a track preview. **Create in Spotify** creates a private playlist, adds the tracks 100 at a time, and then links to it on open.spotify.com and in the Spotify app. If the suggestion's tracks change later (for example when genres finish loading, or you remove a track) or you click **Refresh data**, it offers **Create in Spotify** again.
+
+Click a card to open the playlist on its own page (`#/playlist/<key>`): big cover, reason, create controls, and the full track list with title, artist, album, year, and key and genres where known. **Back to recommendations** (or the browser's back button) returns to the grid with its sort, filters and scroll position as you left them; the page's address keeps the sort and filters (`#/?sort=decade&genre=rock`), so reloads keep them too.
+
+On a playlist's page, **×** removes a track from that suggestion before you create it. Removed tracks stay listed below the track list, where **Restore** (or **Restore all**) brings them back. Removals apply everywhere the suggestion appears (card, counts, filters, and **Create in Spotify**) and last for the browser tab's session, across Back, reload, **Refresh data** and different sets.
 
 | Playlist | How it is picked |
 | --- | --- |
@@ -22,11 +26,11 @@ Genre, key and decade playlists hold at most 100 tracks: played favorites first,
 
 ### Sort and filter
 
-Above the cards, sort the suggestions by type, decade, genre, key (Camelot order), artist or track count, and filter them by type, decade, genre, key, artist and size. A decade, genre or key describes a playlist when at least 20% of its tracks have it; an artist is listed for a playlist when at least 2 of its tracks are theirs. Each filter only offers values that match a suggestion. Genre filters include MusicBrainz genres, and key filters appear after **Find musical keys**.
+The **Sort & filter these playlists** toolbar at the top of **Your recommendations** only changes which suggestions are shown and in what order; it never curates new ones. It shows how many of the playlists match and has a **Clear filters** button. Sort the suggestions by type, decade, genre, key (Camelot order), artist or track count, and filter them by type, decade, genre, key, artist and size. A decade, genre or key describes a playlist when at least 20% of its tracks have it; an artist is listed for a playlist when at least 2 of its tracks are theirs. Each filter only offers values that match a suggestion. Genre filters include MusicBrainz genres, and key filters appear after **Find musical keys**.
 
 ### Curate a different set
 
-**Curate a different set** opens a confirmation listing the current suggestions. Check the ones to keep (already-created ones start checked): kept suggestions carry over exactly as they are, and the rest are replaced by an alternative set with different genre, key and artist picks where there are more candidates than fit, and a different selection and order of tracks. Each new set is reproducible and differs from the last. Playlists you already created stay in Spotify and stay linked in **Created in Spotify this session** at the top of the page. **Refresh data** goes back to the default set.
+**Curate a different set** (in the **Curation** section with the key and genre lookups) opens a confirmation listing the current suggestions. Check the ones to keep (already-created ones start checked): kept suggestions carry over exactly as they are, and the rest are replaced by an alternative set with different genre, key and artist picks where there are more candidates than fit, and a different selection and order of tracks. Each new set is reproducible and differs from the last. Playlists you already created stay in Spotify and stay linked in **Created in Spotify this session** at the top of the page. A reload keeps the current set; **Refresh data** goes back to the default set.
 
 ### How "played" is estimated
 
@@ -74,6 +78,8 @@ npm run build     # typecheck + production build
 | --- | --- |
 | `src/curate.ts` | Pure curation logic (no network, no DOM), including alternative sets and kept suggestions, tested in `test/curate.test.ts` with fixture data |
 | `src/browse.ts` | Pure sort and filter logic for the suggestions |
+| `src/route.ts` | Pure hash routes: the recommendations (sort and filters in the query) and playlist pages |
+| `src/removed-store.ts` | Tracks removed from suggestions, kept for the session |
 | `src/spotify.ts` | Spotify Web API client: paging, 429 `Retry-After`, 401 refresh, playlist creation |
 | `src/reccobeats.ts` | Musical key lookups via ReccoBeats |
 | `src/musicbrainz.ts` | Artist matching (pure) and genre lookups via MusicBrainz |

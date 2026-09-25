@@ -6,6 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Keep curation in `src/curate.ts` pure (no network, DOM, or clock reads) and test it with fixtures from `test/fixtures/`; API clients take injectable `fetch`/`sleep` so tests never hit the network.
 - Spotify Development Mode sharp edges: only use endpoints listed in the README's "Spotify API usage" section, and re-check the Web API changelog before adding one. Batch lookups, popularity, artist top tracks, audio features and `POST /users/{id}/playlists` are gone, and artist `genres` is deprecated and may be empty.
 - MusicBrainz (`src/musicbrainz.ts`, README "Genres (MusicBrainz)") allows ~1 request/second per IP and needs an identifying User-Agent; keep requests serialized through the client's throttle and batched (ISRC/`arid` OR-queries), and keep both enrichments (ReccoBeats, MusicBrainz) opt-in behind a click.
+- UI checks without a Spotify account: run the dev server with any `VITE_SPOTIFY_CLIENT_ID`, then seed `sessionStorage` with `curator.token` (`{accessToken, refreshToken, expiresAt}`) and `curator.cache.v1.library` (a `LibrarySnapshot`, plus `…genres`/`…keys`) and reload; everything renders from the cache. Routes and browse state live in the hash (`src/route.ts`).
 - The redirect URI must be exactly `http://127.0.0.1:8888/callback` (Spotify rejects `localhost`). The Client ID lives only in the gitignored `.env`; never commit it.
 
 ## Maintaining this file
