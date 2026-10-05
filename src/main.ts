@@ -885,7 +885,7 @@ const DATA_SOURCES: DataSource[] = [
     name: 'MusicBrainz',
     url: 'https://musicbrainz.org',
     gives: 'Genres for artists Wikidata has none for, at the one request a second it asks for.',
-    receives: 'Artist names, MusicBrainz artist IDs, and the ISRC recording codes of liked songs.',
+    receives: 'Spotify artist IDs, artist names, MusicBrainz artist IDs, and the ISRC recording codes of liked songs.',
   },
 ];
 

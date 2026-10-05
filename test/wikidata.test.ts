@@ -7,11 +7,11 @@ import {
   WikidataError,
   artistQuery,
   genreIndex,
-  isSpotifyId,
   parseArtists,
   wikidataGenres,
   type WikidataArtist,
 } from '../src/wikidata';
+import { isSpotifyId } from '../src/musicbrainz';
 import { fakeFetch, json } from './fixtures/fake-fetch';
 
 const id = (n: number) => `artist${String(n).padStart(16, '0')}`;

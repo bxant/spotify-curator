@@ -16,7 +16,7 @@
 // sleep so tests never hit the network.
 
 import { defaultSleep, retryAfterMs } from './http';
-import { USER_AGENT, normalizeName } from './musicbrainz';
+import { USER_AGENT, isSpotifyId, normalizeName } from './musicbrainz';
 
 export const WIKIDATA_SPARQL = 'https://query.wikidata.org/sparql';
 /** The same identity the MusicBrainz client uses. */
@@ -39,11 +39,6 @@ export interface WikidataArtist {
 
 // ---------------------------------------------------------------------------
 // Pure helpers
-
-/** Spotify IDs are 22 base-62 characters; anything else is never put in a query. */
-export function isSpotifyId(id: string): boolean {
-  return /^[A-Za-z0-9]{22}$/.test(id);
-}
 
 /** SPARQL for the Spotify artists' MusicBrainz IDs and English genre labels. */
 export function artistQuery(spotifyIds: string[]): string {

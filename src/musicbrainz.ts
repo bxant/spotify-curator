@@ -102,6 +102,11 @@ function noMatch(a: ArtistToMatch, skipped: 'ambiguous' | 'none'): ArtistGenreMa
   return { mbid: null, skipped, ...(skipped === 'none' && a.tracks !== undefined ? { tracks: a.tracks } : {}), genres: [] };
 }
 
+/** Spotify IDs are 22 base-62 characters; anything else is never put in a query. */
+export function isSpotifyId(id: string): boolean {
+  return /^[A-Za-z0-9]{22}$/.test(id);
+}
+
 /** Case-, accent- and punctuation-insensitive form of an artist name, for exact matching. */
 export function normalizeName(name: string): string {
   return name
@@ -239,7 +244,7 @@ export class MusicBrainzClient {
 
   /** MusicBrainz' links to these Spotify artists' pages, with the artists they belong to. */
   async searchSpotifyArtistUrls(spotifyIds: string[], signal?: AbortSignal): Promise<MbUrl[]> {
-    const ids = spotifyIds.filter((id) => /^[A-Za-z0-9]{22}$/.test(id));
+    const ids = spotifyIds.filter(isSpotifyId);
     if (ids.length === 0) return [];
     const query = ids.map((id) => `url:${phrase(spotifyArtistUrl(id))}`).join(' OR ');
     const body = await this.get<{ urls?: MbUrl[] }>(
