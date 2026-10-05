@@ -1,13 +1,16 @@
-// Loads everything curation needs, reusing the session cache where possible.
-// Genres and keys are enrichment: they load after the core library and failures
-// there degrade to "no genre/key playlists" instead of breaking the page. Once a
-// lookup returns or its signal aborts, late results are dropped and not cached.
+// Loads everything curation needs. The library (profile, likes, listening history) lives
+// in the session cache. Keys and genres are enrichment from outside lookups that start on
+// their own once the library is in (see src/enrich.ts); their results are kept in a
+// persistent browser cache, so later visits only look up new songs and artists. Failures
+// there degrade to "fewer genre/key playlists" instead of breaking the page. Once a lookup
+// returns or its signal aborts, late results are dropped and not cached.
 
-import type { ArtistGenreMatch, ArtistToMatch, LookupProgress, MusicBrainzClient } from './musicbrainz';
+import type { ArtistGenreMatch, ArtistToMatch, MusicBrainzClient } from './musicbrainz';
 import type { ReccoBeatsClient } from './reccobeats';
 import type { SessionCache } from './session-cache';
 import type { SpotifyClient, UserProfile } from './spotify';
 import type { LikedTrack, ListeningHistory, TrackKey } from './types';
+import type { WikidataArtist, WikidataClient } from './wikidata';
 
 export interface LibrarySnapshot {
   profile: UserProfile;
@@ -22,11 +25,13 @@ export interface EnrichmentResult<T> {
   error?: string;
 }
 
+/** Cache keys of the enrichment results (in the persistent lookup cache). */
+export const GENRES_KEY = 'genres';
+export const KEYS_KEY = 'keys';
+export const WIKIDATA_KEY = 'wikidata.artists';
+export const MB_ARTISTS_KEY = 'musicbrainz.artists';
+export const MB_GENRE_NAMES_KEY = 'musicbrainz.genres';
 const LIBRARY_KEY = 'library';
-const GENRES_KEY = 'genres';
-const KEYS_KEY = 'keys';
-const MB_ARTISTS_KEY = 'musicbrainz.artists';
-const MB_GENRE_NAMES_KEY = 'musicbrainz.genres';
 /** Persist partial enrichment progress this often so a reload resumes. */
 const SAVE_EVERY = 100;
 
@@ -35,6 +40,8 @@ export async function loadLibrary(
   cache: SessionCache,
   onProgress: (message: string) => void,
   force = false,
+  /** Where Spotify artist genres are kept (the persistent lookup cache in the page). */
+  genreCache: SessionCache = cache,
 ): Promise<LibrarySnapshot> {
   const cached = force ? null : cache.get<LibrarySnapshot>(LIBRARY_KEY);
   if (cached) return cached;
@@ -49,7 +56,7 @@ export async function loadLibrary(
   const { history, topArtistGenres } = await client.getListeningHistory();
 
   // Top artists arrive with genres already, which saves single-artist lookups later.
-  cache.set(GENRES_KEY, { ...(cache.get<Record<string, string[]>>(GENRES_KEY) ?? {}), ...topArtistGenres });
+  genreCache.set(GENRES_KEY, { ...(genreCache.get<Record<string, string[]>>(GENRES_KEY) ?? {}), ...topArtistGenres });
   const snapshot: LibrarySnapshot = { profile, liked, history, fetchedAt: new Date().toISOString() };
   cache.set(LIBRARY_KEY, snapshot);
   return snapshot;
@@ -64,24 +71,29 @@ export function artistsToLookUp(liked: LikedTrack[], known: Record<string, unkno
   return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([id]) => id);
 }
 
+/**
+ * Spotify genres for artists not looked up yet, most-liked first. Artists for which `skip`
+ * returns true when their turn comes (another source found their genres) are not requested.
+ */
 export async function loadGenres(
   client: SpotifyClient,
   liked: LikedTrack[],
   cache: SessionCache,
-  onProgress: (done: number, total: number) => void,
+  onData: (genres: Record<string, string[]>) => void,
   signal?: AbortSignal,
+  skip?: (artistId: string) => boolean,
 ): Promise<EnrichmentResult<string[]>> {
   const known = cache.get<Record<string, string[]>>(GENRES_KEY) ?? {};
   const missing = artistsToLookUp(liked, known);
   const merged = { ...known };
   let stopped = false;
   try {
-    await client.getArtistGenres(missing, (done, total, genres) => {
+    await client.getArtistGenres(missing, (done, _total, genres) => {
       if (stopped || signal?.aborted) return;
       Object.assign(merged, genres);
       if (done % SAVE_EVERY === 0) cache.set(GENRES_KEY, merged);
-      onProgress(done, total);
-    }, signal);
+      onData(merged);
+    }, signal, undefined, skip);
     return { data: merged };
   } catch (err) {
     return { data: merged, error: (err as Error).message };
@@ -91,16 +103,11 @@ export async function loadGenres(
   }
 }
 
-/** Saves keys found so far, e.g. after the owner stopped a lookup. */
-export function saveKeys(cache: SessionCache, keys: Record<string, TrackKey | null>): void {
-  cache.set(KEYS_KEY, keys);
-}
-
 export async function loadKeys(
   recco: ReccoBeatsClient,
   liked: LikedTrack[],
   cache: SessionCache,
-  onProgress: (done: number, total: number) => void,
+  onData: (keys: Record<string, TrackKey | null>) => void,
   signal?: AbortSignal,
 ): Promise<EnrichmentResult<TrackKey | null>> {
   const known = cache.get<Record<string, TrackKey | null>>(KEYS_KEY) ?? {};
@@ -108,11 +115,11 @@ export async function loadKeys(
   const merged = { ...known };
   let stopped = false;
   try {
-    await recco.getTrackKeys(missing, (done, total, keys) => {
+    await recco.getTrackKeys(missing, (done, _total, keys) => {
       if (stopped || signal?.aborted) return;
       Object.assign(merged, keys);
       if (done % (SAVE_EVERY * 4) === 0) cache.set(KEYS_KEY, merged);
-      onProgress(done, total);
+      onData(merged);
     }, signal);
     return { data: merged };
   } catch (err) {
@@ -125,14 +132,20 @@ export async function loadKeys(
 
 /**
  * Artists on liked tracks not yet looked up on MusicBrainz, most-liked first, each with
- * an ISRC from a liked track (preferring one where they are the primary artist).
+ * their liked-song count, an ISRC from a liked track (preferring one where they are the
+ * primary artist) and the MusicBrainz ID Wikidata has for them, if any.
  */
-export function artistsToMatch(liked: LikedTrack[], known: Record<string, unknown>): ArtistToMatch[] {
-  const info = new Map<string, { name: string; isrc?: string; primaryIsrc?: string }>();
+export function artistsToMatch(
+  liked: LikedTrack[],
+  known: Record<string, unknown>,
+  mbids: Record<string, string> = {},
+): ArtistToMatch[] {
+  const info = new Map<string, { name: string; tracks: number; isrc?: string; primaryIsrc?: string }>();
   for (const t of liked) {
     t.artists.forEach((a, i) => {
       if (a.id in known) return;
-      const entry = info.get(a.id) ?? { name: a.name };
+      const entry = info.get(a.id) ?? { name: a.name, tracks: 0 };
+      entry.tracks++;
       if (t.isrc) {
         entry.isrc ??= t.isrc;
         if (i === 0) entry.primaryIsrc ??= t.isrc;
@@ -141,9 +154,9 @@ export function artistsToMatch(liked: LikedTrack[], known: Record<string, unknow
     });
   }
   return artistsToLookUp(liked, known).map((id) => {
-    const e = info.get(id) as { name: string; isrc?: string; primaryIsrc?: string };
+    const e = info.get(id) as { name: string; tracks: number; isrc?: string; primaryIsrc?: string };
     const isrc = e.primaryIsrc ?? e.isrc;
-    return isrc ? { id, name: e.name, isrc } : { id, name: e.name };
+    return { id, name: e.name, tracks: e.tracks, ...(isrc ? { isrc } : {}), ...(mbids[id] ? { mbid: mbids[id] } : {}) };
   });
 }
 
@@ -159,27 +172,73 @@ export function cachedMusicBrainz(cache: SessionCache): Record<string, ArtistGen
   return cache.get<Record<string, ArtistGenreMatch>>(MB_ARTISTS_KEY) ?? {};
 }
 
+/** MusicBrainz' genre names, fetched once per browser; null when MusicBrainz is unreachable. */
+export async function loadGenreNames(mb: MusicBrainzClient, cache: SessionCache, signal?: AbortSignal): Promise<string[] | null> {
+  const cached = cache.get<string[]>(MB_GENRE_NAMES_KEY);
+  if (cached) return cached;
+  try {
+    const names = await mb.getGenreNames(signal);
+    if (!signal?.aborted) cache.set(MB_GENRE_NAMES_KEY, names);
+    return names;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * MusicBrainz genres for artists not looked up there yet, most-liked first. Artists for
+ * which `skip` returns true are left out (see `MusicBrainzClient.findArtistGenres`).
+ */
 export async function loadMusicBrainz(
   mb: MusicBrainzClient,
   liked: LikedTrack[],
   cache: SessionCache,
-  onProgress: (progress: LookupProgress, data: Record<string, ArtistGenreMatch>) => void,
+  genreNames: string[],
+  onData: (data: Record<string, ArtistGenreMatch>) => void,
   signal?: AbortSignal,
+  options: { mbids?: Record<string, string>; skip?: (artistId: string) => boolean } = {},
 ): Promise<EnrichmentResult<ArtistGenreMatch>> {
   const merged = { ...cachedMusicBrainz(cache) };
-  const missing = artistsToMatch(liked, merged);
+  const skip = options.skip ?? (() => false);
+  const missing = artistsToMatch(liked, merged, options.mbids).filter((a) => !skip(a.id));
   let stopped = false;
   try {
-    let genreNames = cache.get<string[]>(MB_GENRE_NAMES_KEY);
-    if (missing.length > 0 && !genreNames) {
-      genreNames = await mb.getGenreNames(signal);
-      if (!signal?.aborted) cache.set(MB_GENRE_NAMES_KEY, genreNames);
-    }
-    await mb.findArtistGenres(missing, new Set(genreNames ?? []), (results, progress) => {
+    await mb.findArtistGenres(missing, new Set(genreNames), (results) => {
       if (stopped || signal?.aborted) return;
       Object.assign(merged, results);
       cache.set(MB_ARTISTS_KEY, merged);
-      onProgress(progress, { ...merged });
+      onData(merged);
+    }, signal, skip);
+    return { data: merged };
+  } catch (err) {
+    return { data: merged, error: signal?.aborted ? undefined : (err as Error).message };
+  } finally {
+    stopped = true;
+  }
+}
+
+/** Cached Wikidata answers (from an earlier lookup in this browser), or {}. */
+export function cachedWikidata(cache: SessionCache): Record<string, WikidataArtist> {
+  return cache.get<Record<string, WikidataArtist>>(WIKIDATA_KEY) ?? {};
+}
+
+/** Wikidata answers for artists not looked up there yet, a few hundred per query. */
+export async function loadWikidata(
+  wikidata: WikidataClient,
+  liked: LikedTrack[],
+  cache: SessionCache,
+  onData: (data: Record<string, WikidataArtist>) => void,
+  signal?: AbortSignal,
+): Promise<EnrichmentResult<WikidataArtist>> {
+  const merged = { ...cachedWikidata(cache) };
+  const missing = artistsToLookUp(liked, merged);
+  let stopped = false;
+  try {
+    await wikidata.findArtists(missing, (results) => {
+      if (stopped || signal?.aborted) return;
+      Object.assign(merged, results);
+      cache.set(WIKIDATA_KEY, merged);
+      onData(merged);
     }, signal);
     return { data: merged };
   } catch (err) {

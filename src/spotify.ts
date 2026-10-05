@@ -203,18 +203,22 @@ export class SpotifyClient {
   /**
    * Genres per artist via single-artist lookups (GET /artists/{id}); the batch
    * "Get Several Artists" endpoint is not available to Development Mode apps.
+   * Artists for which `skip` returns true when their turn comes are not requested.
    */
   async getArtistGenres(
     artistIds: string[],
     onProgress?: (done: number, total: number, genres: Record<string, string[]>) => void,
     signal?: AbortSignal,
     concurrency = 3,
+    skip?: (id: string) => boolean,
   ): Promise<Record<string, string[]>> {
     const genres: Record<string, string[]> = {};
     let done = 0;
     await mapWithConcurrency(artistIds, concurrency, async (id) => {
-      const artist = await this.request<ArtistObject>('GET', `/artists/${encodeURIComponent(id)}`);
-      genres[id] = artist.genres ?? [];
+      if (!skip?.(id)) {
+        const artist = await this.request<ArtistObject>('GET', `/artists/${encodeURIComponent(id)}`);
+        genres[id] = artist.genres ?? [];
+      }
       done++;
       onProgress?.(done, artistIds.length, genres);
     }, signal);
