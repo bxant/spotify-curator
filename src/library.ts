@@ -131,19 +131,19 @@ export async function loadKeys(
 }
 
 /**
- * Artists on liked tracks not yet looked up on MusicBrainz, most-liked first, each with
- * their liked-song count, an ISRC from a liked track (preferring one where they are the
- * primary artist) and the MusicBrainz ID Wikidata has for them, if any.
+ * Artists on liked tracks not yet looked up on MusicBrainz, or found unmatched when they had
+ * fewer liked songs than now, most-liked first, each with their liked-song count, an ISRC
+ * from a liked track (preferring one where they are the primary artist) and the MusicBrainz
+ * ID Wikidata has for them, if any.
  */
 export function artistsToMatch(
   liked: LikedTrack[],
-  known: Record<string, unknown>,
+  known: Record<string, ArtistGenreMatch>,
   mbids: Record<string, string> = {},
 ): ArtistToMatch[] {
   const info = new Map<string, { name: string; tracks: number; isrc?: string; primaryIsrc?: string }>();
   for (const t of liked) {
     t.artists.forEach((a, i) => {
-      if (a.id in known) return;
       const entry = info.get(a.id) ?? { name: a.name, tracks: 0 };
       entry.tracks++;
       if (t.isrc) {
@@ -153,7 +153,10 @@ export function artistsToMatch(
       info.set(a.id, entry);
     });
   }
-  return artistsToLookUp(liked, known).map((id) => {
+  const settled = Object.fromEntries(
+    Object.entries(known).filter(([id, m]) => m.tracks === undefined || (info.get(id)?.tracks ?? 0) <= m.tracks),
+  );
+  return artistsToLookUp(liked, settled).map((id) => {
     const e = info.get(id) as { name: string; tracks: number; isrc?: string; primaryIsrc?: string };
     const isrc = e.primaryIsrc ?? e.isrc;
     return { id, name: e.name, tracks: e.tracks, ...(isrc ? { isrc } : {}), ...(mbids[id] ? { mbid: mbids[id] } : {}) };

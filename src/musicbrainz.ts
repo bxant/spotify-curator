@@ -93,7 +93,13 @@ export interface ArtistGenreMatch {
   via?: 'wikidata' | 'spotify' | 'isrc' | 'name';
   /** Why there is no mbid. */
   skipped?: 'ambiguous' | 'none';
+  /** Liked songs by the artist when nothing matched; a later lookup retries once there are more. */
+  tracks?: number;
   genres: string[];
+}
+
+function noMatch(a: ArtistToMatch, skipped: 'ambiguous' | 'none'): ArtistGenreMatch {
+  return { mbid: null, skipped, ...(skipped === 'none' && a.tracks !== undefined ? { tracks: a.tracks } : {}), genres: [] };
 }
 
 /** Case-, accent- and punctuation-insensitive form of an artist name, for exact matching. */
@@ -346,7 +352,7 @@ export class MusicBrainzClient {
 
     const worthSearching = (a: ArtistToMatch) => (a.tracks ?? NAME_SEARCH_MIN_TRACKS) >= NAME_SEARCH_MIN_TRACKS;
     const unsearched: Record<string, ArtistGenreMatch> = {};
-    for (const a of byName) if (!worthSearching(a)) unsearched[a.id] = { mbid: null, skipped: 'none', genres: [] };
+    for (const a of byName) if (!worthSearching(a)) unsearched[a.id] = noMatch(a, 'none');
     if (Object.keys(unsearched).length > 0) emit(unsearched, Object.keys(unsearched).length);
     await pass(inOrder(byName.filter(worthSearching)), NAME_GROUP, async (group, live) => {
       const outcomes = new Map<string, MatchOutcome>();
@@ -368,8 +374,7 @@ export class MusicBrainzClient {
     const results: Record<string, ArtistGenreMatch> = {};
     for (const a of artists) {
       const o = outcomes.get(a.id) ?? 'none';
-      results[a.id] =
-        typeof o === 'object' ? { mbid: o.mbid, via: o.via, genres: genres(o.mbid) } : { mbid: null, skipped: o, genres: [] };
+      results[a.id] = typeof o === 'object' ? { mbid: o.mbid, via: o.via, genres: genres(o.mbid) } : noMatch(a, o);
     }
     return results;
   }

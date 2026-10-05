@@ -311,8 +311,8 @@ describe('MusicBrainzClient', () => {
     );
     expect(calls.map((call) => new URL(call.url).searchParams.get('query'))).toEqual(['isrc:I1 OR isrc:I2', 'artist:"Many"']);
     expect(got).toEqual({
-      many: { mbid: null, skipped: 'none', genres: [] },
-      one: { mbid: null, skipped: 'none', genres: [] },
+      many: { mbid: null, skipped: 'none', tracks: NAME_SEARCH_MIN_TRACKS, genres: [] },
+      one: { mbid: null, skipped: 'none', tracks: 1, genres: [] },
     });
   });
 

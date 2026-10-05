@@ -105,11 +105,28 @@ describe('artistsToMatch', () => {
       track({ id: '4', artist: 'noisrc' }),
       track({ id: '5', artist: 'done' }),
     ];
-    expect(artistsToMatch(liked, { done: {} })).toEqual([
+    expect(artistsToMatch(liked, { done: { mbid: 'mb', via: 'name', genres: [] } })).toEqual([
       { id: 'guest', name: 'GUEST', tracks: 2, isrc: 'ISRC-OWN' },
       { id: 'lead', name: 'LEAD', tracks: 2, isrc: 'ISRC-FEAT' },
       { id: 'noisrc', name: 'NOISRC', tracks: 1 },
     ]);
+  });
+
+  it('retries an artist found unmatched once they have more liked songs than at that lookup', () => {
+    const liked = [
+      { ...track({ id: '1', artist: 'grew' }), isrc: 'ISRC-NEW' },
+      { ...track({ id: '2', artist: 'grew' }), isrc: 'ISRC-OLD' },
+      track({ id: '3', artist: 'same' }),
+      track({ id: '4', artist: 'same' }),
+      track({ id: '5', artist: 'ambiguous' }),
+      track({ id: '6', artist: 'ambiguous' }),
+    ];
+    const known: Record<string, ArtistGenreMatch> = {
+      grew: { mbid: null, skipped: 'none', tracks: 1, genres: [] },
+      same: { mbid: null, skipped: 'none', tracks: 2, genres: [] },
+      ambiguous: { mbid: null, skipped: 'ambiguous', genres: [] },
+    };
+    expect(artistsToMatch(liked, known)).toEqual([{ id: 'grew', name: 'GREW', tracks: 2, isrc: 'ISRC-NEW' }]);
   });
 });
 
