@@ -402,6 +402,27 @@ describe('curate: a different set', () => {
     expect(find(rest, 'era:1970')).toEqual(find(all, 'era:1970'));
   });
 
+  it('keeps unsaved artist and key picks in place when a saved one is excluded', () => {
+    const many = Array.from({ length: 12 }, (_, b) => singles(`b${b}-`, 30 - b, { artist: () => `artist${b}` })).flat();
+    const trackKeys: Record<string, TrackKey | null> = {};
+    for (const t of many) {
+      const b = Number(t.id.slice(1, t.id.indexOf('-')));
+      trackKeys[t.id] = { key: b, mode: 1 };
+    }
+    const keysOf = (ps: CuratedPlaylist[], kind: string) => ps.filter((p) => p.kind === kind).map((p) => p.key);
+    for (const kind of ['artist', 'key']) {
+      for (const variant of [0, 1, 2]) {
+        const all = keysOf(curate(many, history(), { now: NOW, trackKeys, variant }).playlists, kind);
+        const exclude = new Set([kind === 'artist' ? 'artist:artist0' : 'key:0:1']);
+        const rest = keysOf(curate(many, history(), { now: NOW, trackKeys, variant, exclude }).playlists, kind);
+        expect(all).toHaveLength(6);
+        expect(rest).toHaveLength(6);
+        expect(rest).toEqual(expect.arrayContaining(all.filter((k) => !exclude.has(k))));
+        expect(rest.some((k) => exclude.has(k))).toBe(false);
+      }
+    }
+  });
+
   it('variant 0 is the default set', () => {
     expect(curate(liked, h, { ...options, variant: 0 })).toEqual(curate(liked, h, options));
   });

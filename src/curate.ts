@@ -359,7 +359,7 @@ function artistPlaylists(
   }
 
   const candidates = [...byArtist.entries()]
-    .filter(([id, e]) => e.tracks.length >= LIMITS.minArtistTracks && !exclude.has(`artist:${id}`))
+    .filter(([, e]) => e.tracks.length >= LIMITS.minArtistTracks)
     .map(([id, e]) => {
       let plays = topBonus.get(id) ?? 0;
       for (const t of e.tracks) plays += scores.get(t.id) ?? 0;
@@ -374,6 +374,7 @@ function artistPlaylists(
 
   return mix
     .rotate(candidates, LIMITS.maxArtistPlaylists)
+    .filter((c) => !exclude.has(`artist:${c.id}`))
     .slice(0, LIMITS.maxArtistPlaylists)
     .map((c) => {
       const key = `artist:${c.id}`;
@@ -460,10 +461,11 @@ function keyPlaylists(
     },
   );
   const candidates = [...byKey.entries()]
-    .filter(([id, list]) => list.length >= LIMITS.minBucketTracks && !exclude.has(`key:${id}`))
+    .filter(([, list]) => list.length >= LIMITS.minBucketTracks)
     .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
   return mix
     .rotate(candidates, LIMITS.maxKeyPlaylists)
+    .filter(([id]) => !exclude.has(`key:${id}`))
     .slice(0, LIMITS.maxKeyPlaylists)
     .map(([id, list]) => {
       const k = trackKeys[list[0].id] as TrackKey;
