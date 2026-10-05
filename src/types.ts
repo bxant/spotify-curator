@@ -71,3 +71,21 @@ export interface CuratedPlaylist {
   reason: string;
   tracks: LikedTrack[];
 }
+
+/** One of the signed-in user's own playlists, as far as matching saved suggestions needs it. */
+export interface SavedPlaylist {
+  id: string;
+  name: string;
+  /** As Spotify returns it, which may HTML-escape some characters. */
+  description: string;
+  uri: string;
+  url: string;
+  /** Number of items in the playlist, when Spotify reported it. */
+  trackCount?: number;
+}
+
+/** A saved playlist's tracks: IDs plus name/artist keys (see `trackKey`) for relinked tracks. */
+export interface SavedTracks {
+  ids: string[];
+  keys: string[];
+}

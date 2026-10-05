@@ -43,6 +43,28 @@ describe('CreatedStore', () => {
     expect(changes.length).toBeGreaterThanOrEqual(3);
   });
 
+  it('keeps a record of a key created, being created or failed this session, whatever its tracks now', async () => {
+    const { store } = setup();
+    expect(store.hasRecord('favorites')).toBe(false);
+    const run = deferred();
+    const done = store.create('favorites', 'sig', () => run.promise);
+    expect(store.hasRecord('favorites')).toBe(true);
+    run.resolve(playlist('p1'));
+    await done;
+    expect(store.status('favorites', 'new-tracks').kind).toBe('idle');
+    expect(store.hasRecord('favorites')).toBe(true);
+    expect(store.hasRecord('rediscover')).toBe(false);
+
+    await store.create('rediscover', 'sig', async () => {
+      throw new Error('HTTP 500');
+    });
+    expect(store.hasRecord('rediscover')).toBe(true);
+
+    store.reset();
+    expect(store.hasRecord('favorites')).toBe(false);
+    expect(store.hasRecord('rediscover')).toBe(false);
+  });
+
   it('does not start a second creation for a playlist that is still being created', async () => {
     const { store } = setup();
     const run = deferred();

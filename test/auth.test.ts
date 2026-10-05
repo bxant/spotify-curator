@@ -42,7 +42,13 @@ describe('SpotifyAuth', () => {
     expect(url.searchParams.get('redirect_uri')).toBe(REDIRECT);
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
     expect(url.searchParams.get('scope')!.split(' ')).toEqual(SCOPES);
-    expect(SCOPES).toEqual(['user-library-read', 'user-top-read', 'user-read-recently-played', 'playlist-modify-private']);
+    expect(SCOPES).toEqual([
+      'user-library-read',
+      'user-top-read',
+      'user-read-recently-played',
+      'playlist-modify-private',
+      'playlist-read-private',
+    ]);
     expect(url.searchParams.get('state')).toBeTruthy();
   });
 
@@ -85,6 +91,32 @@ describe('SpotifyAuth', () => {
     advance(3600 * 1000);
     await expect(auth.getAccessToken()).resolves.toBe('at3');
     expect(new URLSearchParams(calls[2].body).get('refresh_token')).toBe('rt');
+  });
+
+  it('records the granted scopes and keeps them when a refresh leaves them out', async () => {
+    let n = 0;
+    const { auth, advance } = setup(() =>
+      n++ === 0
+        ? json({ access_token: 'at', refresh_token: 'rt', expires_in: 3600, scope: SCOPES.join(' ') })
+        : json({ access_token: `at${n}`, expires_in: 3600 }),
+    );
+    await signIn(auth);
+    expect(auth.hasAllScopes()).toBe(true);
+    advance(3600 * 1000);
+    await auth.getAccessToken();
+    expect(auth.hasAllScopes()).toBe(true);
+  });
+
+  it('asks for consent again when a session lacks a scope the app now needs', async () => {
+    const { auth, storage } = setup(() =>
+      json({ access_token: 'at', refresh_token: 'rt', expires_in: 3600, scope: SCOPES.filter((s) => s !== 'playlist-read-private').join(' ') }),
+    );
+    await signIn(auth);
+    expect(auth.hasAllScopes()).toBe(false);
+    // Tokens stored before scopes were recorded count as missing them.
+    storage.setItem('curator.token', JSON.stringify({ accessToken: 'old', refreshToken: 'rt', expiresAt: Date.now() * 2 }));
+    expect(auth.isSignedIn()).toBe(true);
+    expect(auth.hasAllScopes()).toBe(false);
   });
 
   it('signs out when a refresh is rejected', async () => {
