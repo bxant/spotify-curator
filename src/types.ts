@@ -60,10 +60,11 @@ export interface TrackKey {
   mode: 0 | 1;
 }
 
-export type PlaylistKind = 'favorites' | 'rediscover' | 'best-of-albums' | 'artist' | 'genre' | 'key' | 'era';
+/** `custom` is a playlist built from the owner's own choices (src/builder.ts), never a recommendation. */
+export type PlaylistKind = 'favorites' | 'rediscover' | 'best-of-albums' | 'artist' | 'genre' | 'key' | 'era' | 'custom';
 
 export interface CuratedPlaylist {
-  /** Stable identifier, e.g. "favorites", "artist:<id>", "genre:indie rock" or "key:9:0". */
+  /** Stable identifier, e.g. "favorites", "artist:<id>", "genre:indie rock", "key:9:0" or "custom". */
   key: string;
   kind: PlaylistKind;
   name: string;

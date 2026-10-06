@@ -178,17 +178,19 @@ function missingLast<T>(get: (f: PlaylistFacets) => T | null | undefined, cmp: (
 }
 
 /** Position on the Camelot wheel (1A, 1B, 2A, …) so harmonically close keys sort together. */
-function camelotOrder(id: string): number {
+export function camelotOrder(id: string): number {
   const code = camelot(parseKey(id));
   return Number.parseInt(code, 10) * 2 + (code.endsWith('B') ? 1 : 0);
 }
 
-function parseKey(id: string): TrackKey {
+/** "9:0" → { key: 9, mode: 0 }. */
+export function parseKey(id: string): TrackKey {
   const [key, mode] = id.split(':').map(Number);
   return { key, mode: mode === 1 ? 1 : 0 };
 }
 
-function keyFacet(id: string): FacetValue {
+/** A key id ("9:0") with its label, e.g. "A minor (8A)". */
+export function keyFacet(id: string): FacetValue {
   const k = parseKey(id);
   return { id, label: `${keyName(k)} (${camelot(k)})` };
 }

@@ -38,6 +38,12 @@ The **Sort & filter these playlists** toolbar at the top of **Your recommendatio
 
 **Curate a different set** (in the **Curation** section with the key and genre lookups) opens a confirmation listing the current suggestions. Check the ones to keep (already-created ones start checked): kept suggestions carry over exactly as they are, and the rest are replaced by an alternative set with different genre, key and artist picks where there are more candidates than fit, and a different selection and order of tracks. Each new set is reproducible and differs from the last. Playlists you already created stay in Spotify and stay linked in **Created in Spotify this session** at the top of the page. A reload keeps the current set; **Refresh data** goes back to the default set.
 
+### Build your own
+
+**Build your own playlist** (in the **Curation** section, not the recommendations' filter toolbar) makes a new playlist from your Liked Songs instead of narrowing the suggestions. Pick any mix of genres, decades, keys and artists (each optional, several values each) and how many songs you want (5 to 100, 25 by default). A song matches when it has any chosen value of every kind you chose: "rock or jazz, from the 1990s or 2000s". The form shows how many liked songs match as you choose; genre and key choices grow as the lookups below find more.
+
+**Build playlist** opens the result on its own page (`#/playlist/custom`) with the same track removal and **Create in Spotify** as a suggestion. Songs are picked at random, played favorites up to three times as likely, and spread across artists: no artist gets a second song until every matching artist has one. When fewer songs match than you asked for, all of them are in and the page says so. **Try again** picks a different selection with the same choices, preferring songs no earlier try picked (then the ones picked longest ago), so it is disabled when every match is already in. The choices and the latest playlist last for the tab's session.
+
 ### How "played" is estimated
 
 Spotify has no per-track play counts. A liked song counts as played when it appears in your top tracks for any time range or in your last 50 plays. Everything else counts as not listened to. Songs whose IDs differ between endpoints (relinked tracks) are matched by name and primary artist.

@@ -1,6 +1,19 @@
 import './style.css';
 import { AuthError, SpotifyAuth } from './auth';
 import { browse, filterOptions, playlistFacets, type BrowseCriteria, type Browsable, type SortOrder } from './browse';
+import {
+  BUILD_LIMITS,
+  BUILT_KEY,
+  buildChoices,
+  buildPlaylist,
+  clampCount,
+  criteriaId,
+  emptyCriteria,
+  matchingTracks,
+  normalizeCriteria,
+  type BuildChoices,
+  type BuildCriteria,
+} from './builder';
 import { REDIRECT_URI, configuredClientId } from './config';
 import {
   camelot,
@@ -8,6 +21,7 @@ import {
   keepSelected,
   keyName,
   mergeGenres,
+  playScores,
   releaseYear,
   trackGenres,
   trackSignature,
@@ -333,6 +347,27 @@ interface CuratorState {
   saved: SavedState;
   /** Also list the suggestions already saved in Spotify (hidden by default). */
   showSaved: boolean;
+  build: BuildState;
+}
+
+/** The "Build your own" choices and the latest playlist built from them, kept for the tab's session. */
+interface BuildState {
+  /** The choices in the form, built or not. */
+  criteria: BuildCriteria;
+  built?: BuiltState;
+  /** The last Build found no matching songs. */
+  noMatch?: boolean;
+}
+
+interface BuiltState {
+  criteria: BuildCriteria;
+  playlist: CuratedPlaylist;
+  matched: number;
+  requested: number;
+  /** Seed of this try; every Build or Try again uses the next one. */
+  seed: number;
+  /** Track IDs of every try with these choices so far, oldest first; the last is this one. */
+  rolls: string[][];
 }
 
 /** The user's own playlists, read on every load so suggestions saved before are recognized. */
@@ -348,6 +383,10 @@ interface SavedState {
 const DEFAULT_CRITERIA: BrowseCriteria = { sort: 'recommended' };
 /** Session cache key for the current set and kept suggestions, so a reload shows the same playlists. */
 const SET_KEY = 'set';
+/** Session cache key for the "Build your own" choices and the latest built playlist. */
+const BUILD_KEY = 'build';
+/** Earlier tries remembered per choices, so Try again keeps moving to songs not picked yet. */
+const MAX_ROLLS = 20;
 
 interface SavedSet {
   variant: number;
@@ -404,6 +443,7 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
     criteria: route.name === 'home' ? { ...route.criteria } : { ...DEFAULT_CRITERIA },
     saved,
     showSaved: false,
+    build: cache.get<BuildState>(BUILD_KEY) ?? { criteria: emptyCriteria() },
   };
 
   /** A signal that aborts on a new page load or when the owner clicks Stop. */
@@ -618,6 +658,35 @@ function createCuratorView(
     });
   };
 
+  const scores = playScores(state.library.liked, state.library.history);
+  const buildInputs = () => ({
+    artistGenres: mergeGenres(state.genres, musicBrainzGenres(state.musicBrainz)),
+    trackKeys: state.keys,
+    scores,
+  });
+  const saveBuild = () => cache.set(BUILD_KEY, state.build);
+
+  /**
+   * Builds a playlist from the choices; with the same choices as the latest one, it is a
+   * retry that prefers songs no earlier try picked. Returns false when nothing matches.
+   */
+  const build = (choices: BuildCriteria): boolean => {
+    const criteria = normalizeCriteria(choices);
+    const prior = state.build.built;
+    const again = prior && criteriaId(prior.criteria) === criteriaId(criteria) ? prior : undefined;
+    const seed = (prior?.seed ?? 0) + 1;
+    const result = buildPlaylist(state.library.liked, criteria, buildInputs(), { seed, previous: again?.rolls ?? [] });
+    state.build.noMatch = !result;
+    if (result) {
+      const rolls = [...(again?.rolls ?? []), result.playlist.tracks.map((t) => t.id)].slice(-MAX_ROLLS);
+      state.build.built = { criteria, playlist: result.playlist, matched: result.matched, requested: result.requested, seed, rolls };
+      // Removals belonged to the previous selection.
+      removedStore.restoreAll(BUILT_KEY);
+    }
+    saveBuild();
+    return !!result;
+  };
+
   /** Keeps the address bar in step with the sort and filters, without adding history entries. */
   const syncHomeUrl = () => {
     if (route.name !== 'home') return;
@@ -693,6 +762,19 @@ function createCuratorView(
     };
 
     renderProgress();
+    const builder = builderPanel(state, buildChoices(state.library.liked, buildInputs()), {
+      count: (c) => matchingTracks(state.library.liked, c, buildInputs()).length,
+      save: saveBuild,
+      build: () => {
+        if (build(state.build.criteria)) {
+          rememberHomeScroll();
+          location.hash = playlistHref(BUILT_KEY);
+        } else {
+          render();
+          app.querySelector<HTMLElement>('#builder-build')?.focus();
+        }
+      },
+    });
     const recurate =
       cur.shown.length > 0 &&
       button([icon('shuffle'), 'Curate a different set'], { class: 'secondary' }, () => {
@@ -708,7 +790,7 @@ function createCuratorView(
       topBar(auth),
       heroEl,
       createdList(),
-      curationSection(state, cur.result, live, actions, recurate),
+      curationSection(state, cur.result, live, actions, recurate, builder.el),
       h(
         'section',
         { class: 'recs', 'aria-labelledby': 'recs-title' },
@@ -733,6 +815,7 @@ function createCuratorView(
 
     refresh = () => {
       cur = curateNow();
+      builder.setChoices(buildChoices(state.library.liked, buildInputs()));
       const next = hero(state, cur.result);
       heroEl.replaceWith(next);
       heroEl = next;
@@ -746,10 +829,15 @@ function createCuratorView(
   };
 
   const renderPlaylist = (key: string) => {
+    const isBuilt = key === BUILT_KEY;
     const find = () => {
       const cur = curateNow();
+      const built = isBuilt ? state.build.built : undefined;
       // Saved recommendations keep their page even while hidden from the grid.
-      const item = [...cur.freshItems, ...cur.savedItems].find((i) => i.playlist.key === key);
+      const builtPlaylist = built && removedStore.apply(built.playlist);
+      const item = isBuilt
+        ? builtPlaylist && { playlist: builtPlaylist, facets: playlistFacets(builtPlaylist, { artistGenres: cur.artistGenres, trackKeys: state.keys }) }
+        : [...cur.freshItems, ...cur.savedItems].find((i) => i.playlist.key === key);
       const saved = cur.savedMatches.get(key);
       fetchNeededTracks(cur);
       return { cur, item, saved, signature: item ? `${trackSignature(item.playlist)}|${saved?.playlist.id ?? ''}` : '' };
@@ -787,7 +875,7 @@ function createCuratorView(
     };
     const draw = () => {
       const { cur, item, saved } = shown;
-      const original = cur.curated.find((p) => p.key === key);
+      const original = isBuilt ? state.build.built?.playlist : cur.curated.find((p) => p.key === key);
       const byId = new Map(original?.tracks.map((t) => [t.id, t]));
       const removed = removedStore
         .removed(key)
@@ -802,9 +890,18 @@ function createCuratorView(
               { artistGenres: cur.artistGenres, trackKeys: state.keys, kept: cur.keptKeys.has(key), saved },
               { removed, ...editing },
               back,
+              isBuilt && state.build.built && builtControls(state.build.built, retry),
             )
-          : missingPlaylistPage(state, back),
+          : missingPlaylistPage(state, back, isBuilt),
       );
+    };
+    const retry = () => {
+      const built = state.build.built;
+      if (!built) return;
+      build(built.criteria);
+      shown = find();
+      draw();
+      app.querySelector<HTMLElement>('#builder-retry')?.focus();
     };
     draw();
     lastPlaylistKey = key;
@@ -840,7 +937,11 @@ function createCuratorView(
       // Only the query changed (typed or pasted): stay where the page is.
       if (from.name === 'home') return;
       window.scrollTo(0, savedHomeScroll());
-      const card = lastPlaylistKey && app.querySelector<HTMLAnchorElement>(`a.card-link[href="${CSS.escape(playlistHref(lastPlaylistKey))}"]`);
+      // A built playlist has no card; its way back lands on the builder.
+      const card =
+        lastPlaylistKey === BUILT_KEY
+          ? app.querySelector<HTMLElement>('#builder-build')
+          : lastPlaylistKey && app.querySelector<HTMLAnchorElement>(`a.card-link[href="${CSS.escape(playlistHref(lastPlaylistKey))}"]`);
       if (card) card.focus({ preventScroll: true });
       return;
     }
@@ -971,6 +1072,7 @@ function curationSection(
   live: { spotifyGenres: HTMLElement; keyBar: HTMLProgressElement; keyText: HTMLElement; mbBar: HTMLProgressElement; mbText: HTMLElement },
   actions: Actions,
   recurate: HTMLElement | false,
+  builder: HTMLElement,
 ): HTMLElement {
   const liked = state.library.liked;
   const s = result.stats;
@@ -1032,11 +1134,12 @@ function curationSection(
         h(
           'p',
           { class: 'muted' },
-          'Playlists are picked from your Liked Songs and listening history. Curate a different set for new picks, or add musical keys and genres for more kinds of playlists.',
+          'Playlists are picked from your Liked Songs and listening history. Curate a different set for new picks, build your own from the genres, decades, keys and artists you choose, or add musical keys and genres for more kinds of playlists.',
         ),
       ),
       recurate,
     ),
+    builder,
     h('h3', { class: 'enrich-title' }, 'Make the suggestions smarter'),
     h(
       'p',
@@ -1114,6 +1217,7 @@ const KIND_LABEL: Record<PlaylistKind, string> = {
   genre: 'Genre',
   key: 'Musical key',
   era: 'Decade',
+  custom: 'Your mix',
 };
 
 const SORT_LABEL: Record<SortOrder, string> = {
@@ -1315,6 +1419,254 @@ function recurateDialog(shown: CuratedPlaylist[], keptKeys: ReadonlySet<string>,
 }
 
 // ---------------------------------------------------------------------------
+// Build your own: a new playlist from the owner's choices (see src/builder.ts).
+// It sits with the curation actions; the recommendations' filters only narrow what is shown.
+
+/** Pickers left open, so a redraw (e.g. when genres finish loading) keeps them open. */
+const openPickers = new Set<string>();
+/** Most unchosen options a picker lists at once; typing in its search narrows the rest. */
+const PICKER_LIMIT = 100;
+
+interface PickerOption {
+  value: string;
+  label: string;
+  count: number;
+}
+
+function builderPanel(
+  state: CuratorState,
+  initial: BuildChoices,
+  on: { count: (c: BuildCriteria) => number; save: () => void; build: () => void },
+): { el: HTMLElement; setChoices: (choices: BuildChoices) => void } {
+  const c = state.build.criteria;
+  let choices = initial;
+  const status = h('p', { class: 'builder-status small', role: 'status' });
+  const build = button('Build playlist', { class: 'primary', id: 'builder-build' }, on.build);
+  const fills: (() => void)[] = [];
+
+  const updateStatus = () => {
+    const n = on.count(c);
+    const songs = `${n.toLocaleString()} liked ${n === 1 ? 'song matches' : 'songs match'}`;
+    build.disabled = n === 0;
+    status.classList.toggle('error', n === 0 || !!state.build.noMatch);
+    status.textContent =
+      n === 0
+        ? 'No liked songs match all of these choices. Choose more values, or fewer kinds of choices.'
+        : n < c.count
+          ? `${songs}, fewer than the ${c.count} you asked for, so all of them will be in.`
+          : `${songs}; ${c.count} will be picked at random, spread across artists.`;
+  };
+  const changed = () => {
+    state.build.noMatch = false;
+    on.save();
+    updateStatus();
+  };
+
+  const picker = (p: {
+    name: string;
+    title: string;
+    any: string;
+    options: () => PickerOption[];
+    selected: () => string[];
+    set: (values: string[]) => void;
+    empty: string;
+    searchable?: boolean;
+  }): HTMLElement => {
+    const details = h('details', { class: 'picker' }) as HTMLDetailsElement;
+    details.open = openPickers.has(p.name);
+    details.addEventListener('toggle', () => (details.open ? openPickers.add(p.name) : openPickers.delete(p.name)));
+    const value = h('span', { class: 'picker-value' });
+    const search = p.searchable
+      ? (h('input', { type: 'search', class: 'picker-search', placeholder: `Find ${p.title.toLowerCase()}`, 'aria-label': `Find ${p.title.toLowerCase()}` }) as HTMLInputElement)
+      : undefined;
+    const list = h('ul', { class: 'picker-list', 'aria-label': p.title });
+    const note = h('p', { class: 'muted small picker-note' });
+
+    const summarize = () => {
+      const labels = new Map(p.options().map((o) => [o.value, o.label]));
+      const chosen = p.selected().map((v) => labels.get(v) ?? v);
+      value.textContent = chosen.length === 0 ? p.any : chosen.length <= 2 ? chosen.join(', ') : `${chosen.slice(0, 2).join(', ')} +${chosen.length - 2}`;
+    };
+    const toggle = (v: string, checked: boolean) => {
+      const values = p.selected().filter((x) => x !== v);
+      p.set(checked ? [...values, v] : values);
+      summarize();
+      changed();
+    };
+    const fillList = () => {
+      const all = p.options();
+      const chosen = new Set(p.selected());
+      const query = search?.value.trim().toLowerCase() ?? '';
+      const known = new Map(all.map((o) => [o.value, o]));
+      // Chosen values stay listed (first) whatever the search, so they can be unchosen.
+      const first = [...chosen].map((v) => known.get(v) ?? { value: v, label: v, count: 0 });
+      const rest = all.filter((o) => !chosen.has(o.value) && (!query || o.label.toLowerCase().includes(query)));
+      list.replaceChildren(
+        ...[...first, ...rest.slice(0, PICKER_LIMIT)].map((o) => {
+          const box = h('input', { type: 'checkbox', value: o.value }) as HTMLInputElement;
+          box.checked = chosen.has(o.value);
+          box.addEventListener('change', () => toggle(o.value, box.checked));
+          return h('li', {}, h('label', {}, box, h('span', { class: 'picker-option' }, o.label), h('span', { class: 'muted' }, o.count.toLocaleString())));
+        }),
+      );
+      note.textContent =
+        all.length === 0
+          ? p.empty
+          : rest.length > PICKER_LIMIT
+            ? `Showing ${PICKER_LIMIT} of ${rest.length.toLocaleString()}; type to find more.`
+            : query && rest.length === 0
+              ? 'Nothing else matches.'
+              : '';
+      note.hidden = !note.textContent;
+      if (search) search.hidden = all.length <= PICKER_LIMIT / 4;
+    };
+    search?.addEventListener('input', fillList);
+    fills.push(() => {
+      summarize();
+      fillList();
+    });
+    details.append(h('summary', {}, h('span', { class: 'picker-title' }, p.title), value), h('div', { class: 'picker-body' }, search, list, note));
+    return details;
+  };
+
+  const pickers = [
+    picker({
+      name: 'genres',
+      title: 'Genres',
+      any: 'Any genre',
+      options: () => choices.genres.map((o) => ({ value: o.id, label: o.id, count: o.count })),
+      selected: () => c.genres,
+      set: (v) => (c.genres = v),
+      empty: 'No genres are known yet. Find more genres below.',
+      searchable: true,
+    }),
+    picker({
+      name: 'decades',
+      title: 'Decades',
+      any: 'Any decade',
+      options: () => choices.decades.map((o) => ({ value: String(o.id), label: `${o.id}s`, count: o.count })),
+      selected: () => c.decades.map(String),
+      set: (v) => (c.decades = v.map(Number)),
+      empty: 'No release years are known.',
+    }),
+    picker({
+      name: 'keys',
+      title: 'Keys',
+      any: 'Any key',
+      options: () => choices.keys.map((o) => ({ value: o.id, label: o.label, count: o.count })),
+      selected: () => c.keys,
+      set: (v) => (c.keys = v),
+      empty: 'No musical keys are known yet. Find musical keys below.',
+    }),
+    picker({
+      name: 'artists',
+      title: 'Artists',
+      any: 'Any artist',
+      options: () => choices.artists.map((o) => ({ value: o.id, label: o.label, count: o.count })),
+      selected: () => c.artists,
+      set: (v) => (c.artists = v),
+      empty: 'No artists yet.',
+      searchable: true,
+    }),
+  ];
+
+  const count = h('input', {
+    type: 'number',
+    id: 'builder-count',
+    min: String(BUILD_LIMITS.minCount),
+    max: String(BUILD_LIMITS.maxCount),
+    step: '1',
+    inputmode: 'numeric',
+  }) as HTMLInputElement;
+  count.value = String(c.count);
+  count.addEventListener('input', () => {
+    if (count.value === '' || !Number.isFinite(count.valueAsNumber)) return;
+    c.count = clampCount(count.valueAsNumber);
+    changed();
+  });
+  count.addEventListener('change', () => (count.value = String(c.count)));
+
+  const clear = button('Clear choices', { class: 'ghost small' }, () => {
+    Object.assign(c, { genres: [], decades: [], keys: [], artists: [] });
+    for (const fill of fills) fill();
+    changed();
+  });
+
+  const built = state.build.built;
+  const latest =
+    built &&
+    h(
+      'p',
+      { class: 'muted small' },
+      'Latest: ',
+      (() => {
+        const link = h('a', { href: playlistHref(BUILT_KEY) }, built.playlist.name);
+        link.addEventListener('click', rememberHomeScroll);
+        return link;
+      })(),
+      ` · ${built.playlist.tracks.length} songs`,
+    );
+
+  const el = h(
+    'div',
+    { class: 'builder', role: 'group', 'aria-labelledby': 'builder-title', 'aria-describedby': 'builder-intro' },
+    h('h3', { id: 'builder-title' }, 'Build your own playlist'),
+    h(
+      'p',
+      { class: 'muted', id: 'builder-intro' },
+      'Choose any mix of genres, decades, keys and artists, and how many songs you want. This makes a new playlist from your Liked Songs; the filters under Your recommendations only narrow the suggestions.',
+    ),
+    h(
+      'div',
+      { class: 'builder-fields' },
+      ...pickers,
+      h('label', { class: 'builder-count', for: 'builder-count' }, h('span', { class: 'picker-title' }, 'Songs'), count, h('span', { class: 'muted small' }, `${BUILD_LIMITS.minCount}–${BUILD_LIMITS.maxCount}`)),
+    ),
+    h('div', { class: 'builder-actions' }, build, clear, status),
+    latest,
+  );
+  for (const fill of fills) fill();
+  updateStatus();
+
+  return {
+    el,
+    setChoices: (next) => {
+      choices = next;
+      // Leave the lists alone while the owner is using them; the next full render catches up.
+      if (!el.contains(document.activeElement)) for (const fill of fills) fill();
+      updateStatus();
+    },
+  };
+}
+
+/** Try again, and how the built playlist compares to what was asked for, on its page. */
+function builtControls(built: BuiltState, onRetry: () => void): HTMLElement {
+  const everyMatch = built.matched <= built.requested;
+  return h(
+    'div',
+    { class: 'built-controls' },
+    built.matched < built.requested &&
+      h(
+        'p',
+        { class: 'shortfall' },
+        `Only ${built.matched.toLocaleString()} of your liked songs match these choices, fewer than the ${built.requested} you asked for.`,
+      ),
+    h(
+      'div',
+      { class: 'built-actions' },
+      button([icon('shuffle'), 'Try again'], { class: 'secondary', id: 'builder-retry', ...(everyMatch ? { disabled: '' } : {}) }, onRetry),
+      h(
+        'span',
+        { class: 'muted small' },
+        everyMatch
+          ? 'Every matching song is already in, so another try would pick the same ones.'
+          : `Picks a different ${built.requested} of the ${built.matched.toLocaleString()} matching songs, favoring ones not picked yet.`,
+      ),
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Playlist cards
 
 function playlistCard(client: SpotifyClient, p: CuratedPlaylist, facets: Browsable['facets'], kept: boolean, saved?: SavedMatch): HTMLElement {
@@ -1377,8 +1729,8 @@ function playlistLength(p: CuratedPlaylist): string {
 // ---------------------------------------------------------------------------
 // Playlist page (#/playlist/<key>)
 
-function backButton(onBack: () => void): HTMLElement {
-  return h('nav', { class: 'page-nav', 'aria-label': 'Playlist' }, button([icon('back'), 'Back to recommendations'], { class: 'ghost' }, onBack));
+function backButton(onBack: () => void, label = 'Back to recommendations'): HTMLElement {
+  return h('nav', { class: 'page-nav', 'aria-label': 'Playlist' }, button([icon('back'), label], { class: 'ghost' }, onBack));
 }
 
 interface TrackEditing {
@@ -1393,11 +1745,12 @@ function playlistPage(
   known: { artistGenres: Record<string, string[]>; trackKeys: Record<string, TrackKey | null>; kept: boolean; saved?: SavedMatch },
   editing: TrackEditing & { removed: LikedTrack[] },
   onBack: () => void,
+  extra?: HTMLElement | false,
 ): HTMLElement {
   return h(
     'article',
     { class: 'playlist-page', 'aria-labelledby': 'playlist-title' },
-    backButton(onBack),
+    backButton(onBack, p.kind === 'custom' ? 'Back to Build your own' : undefined),
     h(
       'header',
       { class: 'playlist-hero' },
@@ -1416,6 +1769,7 @@ function playlistPage(
         ),
         facetChips(facets),
         createControls(client, p, known.saved),
+        extra,
       ),
     ),
     p.tracks.length > 0
@@ -1451,7 +1805,20 @@ function removedTracks(editing: TrackEditing & { removed: LikedTrack[] }): HTMLE
   );
 }
 
-function missingPlaylistPage(state: CuratorState, onBack: () => void): HTMLElement {
+function missingPlaylistPage(state: CuratorState, onBack: () => void, built: boolean): HTMLElement {
+  if (built) {
+    return h(
+      'section',
+      { class: 'playlist-page' },
+      backButton(onBack, 'Back to Build your own'),
+      h(
+        'div',
+        { class: 'panel missing' },
+        h('h1', { tabindex: '-1' }, 'No playlist has been built in this tab yet'),
+        h('p', { class: 'muted' }, 'Choose genres, decades, keys or artists under Build your own, then click Build playlist.'),
+      ),
+    );
+  }
   const loading = !!state.genreProgress || state.mbRun.running || state.keyRun.running;
   return h(
     'section',
