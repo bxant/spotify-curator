@@ -58,7 +58,7 @@ A play-along corner for guitarists, part of the same app. **Musicians Corner ↗
 
 What it shows (`#/musicians`):
 
-- The **Key of …** playlists from your current recommendations (including any already in your Spotify, marked as such), each with its Camelot code and a capo hint for the key. A different set in the curator tab shows up here on the next load.
+- The **Key of …** playlists from your current recommendations (including any already in your Spotify, marked as such), each with its Camelot code and a capo hint for the key. A different set curated in the curator tab shows up here after reopening **Musicians Corner ↗** from that tab; reloading the corner keeps the set it was opened with.
 - **Easy guitar keys only** limits the list to keys playable with open chords and no capo: G, C, D, A or E major, or E, A or D minor (`#/musicians?easy=1`).
 - Opening a playlist shows its own page (`#/musicians/playlist/<key>`), like the curator's: track removal and **Create in Spotify**, so the playlist is easy to find in Spotify while you play. Each song also shows its key, a capo hint, **Chords ↗** (an [Ultimate Guitar](https://www.ultimate-guitar.com) search for the artist and title) and **Play ↗** (the track on open.spotify.com), both in a new tab.
 - While keys are still being looked up and there are no key playlists yet, it says so and the background-lookup panel shows the progress.

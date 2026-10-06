@@ -74,7 +74,7 @@ function emptyState(state: CornerState, total: number, showAll: () => void): HTM
       'div',
       { class: 'muted empty' },
       h('p', {}, `None of your ${total} key playlists is in an easy key (${EASY_KEYS_TEXT}).`),
-      h('p', {}, 'Each one still has a capo hint, or curate a different set in the curator tab for other keys.'),
+      h('p', {}, 'Each one still has a capo hint. For other keys, curate a different set in the curator tab, then reopen Musicians Corner ↗ from there.'),
       button('Show all keys', { class: 'ghost small' }, showAll),
     );
   }
@@ -91,7 +91,7 @@ function emptyState(state: CornerState, total: number, showAll: () => void): HTM
     'div',
     { class: 'muted empty' },
     h('p', {}, 'No key playlists in your current recommendations.'),
-    h('p', {}, 'Key playlists need at least 15 liked songs in one key. Curate a different set in the curator tab, or check back after liking more songs.'),
+    h('p', {}, 'Key playlists need at least 15 liked songs in one key. Curate a different set in the curator tab, then reopen Musicians Corner ↗ from there, or check back after liking more songs.'),
   );
 }
 
