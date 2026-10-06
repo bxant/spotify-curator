@@ -591,8 +591,8 @@ function createCuratorView(
 
   const scores = playScores(state.library.liked, state.library.history);
   const buildInputs = () => ({
-    artistGenres: mergeGenres(state.genres, musicBrainzGenres(state.musicBrainz)),
-    trackKeys: state.keys,
+    artistGenres: mergeGenres(state.enrich.spotify, openGenres(state.enrich)),
+    trackKeys: state.enrich.keys,
     scores,
   });
   const saveBuild = () => cache.set(BUILD_KEY, state.build);
@@ -719,7 +719,6 @@ function createCuratorView(
       savedLine.hidden = parts.length === 0;
     };
 
-    renderProgress();
     const builder = builderPanel(state, buildChoices(state.library.liked, buildInputs()), {
       count: (c) => matchingTracks(state.library.liked, c, buildInputs()).length,
       save: saveBuild,
@@ -745,7 +744,7 @@ function createCuratorView(
       topBar(auth),
       heroEl,
       createdList(),
-      curationSection(state, cur.result, live, actions, recurate, builder.el),
+      curationSection(recurate, builder.el),
       h(
         'section',
         { class: 'recs', 'aria-labelledby': 'recs-title' },
@@ -771,9 +770,11 @@ function createCuratorView(
     refresh = () => {
       cur = curateNow();
       builder.setChoices(buildChoices(state.library.liked, buildInputs()));
-      const next = hero(state, cur.result);
-      heroEl.replaceWith(next);
-      heroEl = next;
+      if (!heroEl.contains(document.activeElement)) {
+        const next = hero(state, cur.result);
+        heroEl.replaceWith(next);
+        heroEl = next;
+      }
       bar.setItems(items());
       syncHomeUrl();
       renderGrid(true);
@@ -789,7 +790,7 @@ function createCuratorView(
       // Saved recommendations keep their page even while hidden from the grid.
       const builtPlaylist = built && removedStore.apply(built.playlist);
       const item = isBuilt
-        ? builtPlaylist && { playlist: builtPlaylist, facets: playlistFacets(builtPlaylist, { artistGenres: cur.artistGenres, trackKeys: state.keys }) }
+        ? builtPlaylist && { playlist: builtPlaylist, facets: playlistFacets(builtPlaylist, { artistGenres: cur.artistGenres, trackKeys: state.enrich.keys }) }
         : [...cur.freshItems, ...cur.savedItems].find((i) => i.playlist.key === key);
       const saved = cur.savedMatches.get(key);
       fetchNeededTracks(cur);
@@ -1061,61 +1062,7 @@ function createdList(): HTMLElement {
 // Curation: what changes the recommendations themselves — a different set, and
 // the two opt-in lookups that send data to outside services.
 
-function curationSection(
-  state: CuratorState,
-  result: CurationResult,
-  live: { spotifyGenres: HTMLElement; keyBar: HTMLProgressElement; keyText: HTMLElement; mbBar: HTMLProgressElement; mbText: HTMLElement },
-  actions: Actions,
-  recurate: HTMLElement | false,
-  builder: HTMLElement,
-): HTMLElement {
-  const liked = state.library.liked;
-  const s = result.stats;
-
-  // Musical keys (ReccoBeats)
-  const keysKnown = liked.filter((t) => t.id in state.keys).length;
-  const keysMissing = liked.length - keysKnown;
-  const keyRun = state.keyRun;
-  let keyState: HTMLElement;
-  if (keyRun.running) {
-    keyState = runningState(live.keyBar, live.keyText, keyRun);
-  } else if (keysMissing === 0 && liked.length > 0) {
-    keyState = doneState(`Keys found for ${s.tracksWithKey.toLocaleString()} of ${liked.length.toLocaleString()} songs.`);
-  } else {
-    const label = keysKnown > 0 ? `Find keys for ${keysMissing.toLocaleString()} more songs` : 'Find musical keys';
-    keyState = h(
-      'div',
-      { class: 'enrich-state' },
-      button(label, { class: 'primary' }, actions.findKeys),
-      h('span', { class: 'muted small' }, keysKnown > 0 ? `${s.tracksWithKey.toLocaleString()} songs have a key so far.` : `${liked.length.toLocaleString()} songs to look up.`),
-    );
-  }
-
-  // Genres (MusicBrainz)
-  const mbRun = state.mbRun;
-  const artistsLeft = artistsToMatch(liked, state.musicBrainz).length;
-  const libraryArtists = new Set(liked.flatMap((t) => t.artists.map((a) => a.id)));
-  const matches = [...libraryArtists].map((id) => state.musicBrainz[id]).filter((m): m is ArtistGenreMatch => !!m);
-  const matched = matches.filter((m) => m.mbid).length;
-  const withGenres = matches.filter((m) => m.genres.length > 0).length;
-  let mbState: HTMLElement;
-  if (mbRun.running) {
-    mbState = runningState(live.mbBar, live.mbText, mbRun);
-  } else if (artistsLeft === 0 && libraryArtists.size > 0) {
-    mbState = doneState(
-      `Matched ${matched.toLocaleString()} of ${libraryArtists.size.toLocaleString()} artists; ${withGenres.toLocaleString()} have genres.`,
-    );
-  } else {
-    const label = matches.length > 0 ? `Continue: ${artistsLeft.toLocaleString()} artists left` : 'Find more genres';
-    mbState = h(
-      'div',
-      { class: 'enrich-state' },
-      button(label, { class: 'primary' }, actions.findGenres),
-      h('span', { class: 'muted small' }, `${artistsLeft.toLocaleString()} artists, about ${duration(artistsLeft * MB_SECONDS_PER_ARTIST)}.`),
-    );
-  }
-
-function curationSection(recurate: HTMLElement | false): HTMLElement {
+function curationSection(recurate: HTMLElement | false, builder: HTMLElement): HTMLElement {
   return h(
     'section',
     { class: 'curation', 'aria-labelledby': 'curation-title' },
@@ -1130,41 +1077,15 @@ function curationSection(recurate: HTMLElement | false): HTMLElement {
         h(
           'p',
           { class: 'muted' },
-          'Playlists are picked from your Liked Songs and listening history. Curate a different set for new picks, build your own from the genres, decades, keys and artists you choose, or add musical keys and genres for more kinds of playlists.',
+          'Playlists are picked from your Liked Songs and listening history, with musical keys and genres looked up in the background. ' +
+            'Curate a different set for new picks, or build your own from the genres, decades, keys and artists you choose.',
         ),
       ),
       recurate,
     ),
     builder,
-    h('h3', { class: 'enrich-title' }, 'Make the suggestions smarter'),
-    h(
-      'p',
-      { class: 'muted enrich-intro' },
-      'Spotify no longer gives new apps musical keys and has deprecated artist genres. These optional lookups fill the gaps from free outside services. ',
-      'Nothing is sent to them until you click.',
-    ),
-    h(
-      'div',
-      { class: 'enrich-grid' },
-      enrichCard({
-        icon: 'note',
-        title: 'Musical keys',
-        service: 'ReccoBeats',
-        what: 'Adds key playlists (with Camelot codes for harmonic mixing) and lets you sort and filter by key.',
-        sends: 'Sends the Spotify track IDs of your liked songs to ReccoBeats (reccobeats.com), and nothing else.',
-        state: keyState,
-      }),
-      enrichCard({
-        icon: 'tag',
-        title: 'More genres',
-        service: 'MusicBrainz',
-        what: 'Cross-references your artists on MusicBrainz, the open music encyclopedia, for genre playlists and genre filters. Matches by ISRC or exact name and skips anything ambiguous.',
-        sends:
-          'Sends artist names and the ISRC recording codes of liked songs to MusicBrainz (musicbrainz.org), one request a second as it asks. Results are kept in this browser until you sign out.',
-        state: mbState,
-        extra: live.spotifyGenres,
-      }),
-    ),
+    h('h3', { class: 'sources-title', id: 'data-sources' }, 'Data sources'),
+    dataSources(),
   );
 }
 
@@ -1696,7 +1617,7 @@ function builderPanel(
       options: () => choices.genres.map((o) => ({ value: o.id, label: o.id, count: o.count })),
       selected: () => c.genres,
       set: (v) => (c.genres = v),
-      empty: 'No genres are known yet. Find more genres below.',
+      empty: 'No genres are known yet; they are still being looked up or none were found.',
       searchable: true,
     }),
     picker({
@@ -1715,7 +1636,7 @@ function builderPanel(
       options: () => choices.keys.map((o) => ({ value: o.id, label: o.label, count: o.count })),
       selected: () => c.keys,
       set: (v) => (c.keys = v),
-      empty: 'No musical keys are known yet. Find musical keys below.',
+      empty: 'No musical keys are known yet; they are still being looked up or none were found.',
     }),
     picker({
       name: 'artists',
@@ -1991,7 +1912,7 @@ function missingPlaylistPage(state: CuratorState, onBack: () => void, built: boo
       ),
     );
   }
-  const loading = !!state.genreProgress || state.mbRun.running || state.keyRun.running;
+  const loading = !!state.stop;
   return h(
     'section',
     { class: 'playlist-page' },
