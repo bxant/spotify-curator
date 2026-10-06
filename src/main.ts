@@ -832,6 +832,7 @@ function createCuratorView(
     if (settled) {
       clearTimeout(statusTimer);
       clearTimeout(curateTimer);
+      curateTimer = undefined;
       showStatus();
       // Starting needs no new suggestions; a lookup that finished or stopped does.
       if (now !== 'running running') recurate();
