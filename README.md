@@ -50,6 +50,27 @@ Spotify has no per-track play counts. A liked song counts as played when it appe
 
 An album counts as "liked whole" when at least 4 of its tracks, and at least 40% of the album, were liked within one hour.
 
+## Musicians Corner
+
+A play-along corner for guitarists, part of the same app. **Musicians Corner ↗** in the header (once signed in) opens it in a new browser tab, already signed in and with the library this tab loaded.
+
+**Goals.** Make the key playlists the curator already suggests useful for jamming: pick a playlist in a key you like, see how to play each song on guitar, and jump to chords and the recording. It reuses the curator's suggestions, playlist pages and **Create in Spotify** rather than curating anything of its own, and it never fetches, scrapes or embeds chord data: chords stay on Ultimate Guitar. Later ideas (not built yet): a **Find on YouTube** link per song.
+
+What it shows (`#/musicians`):
+
+- The **Key of …** playlists from your current recommendations (including any already in your Spotify, marked as such), each with its Camelot code and a capo hint for the key. A different set in the curator tab shows up here on the next load.
+- **Easy guitar keys only** limits the list to keys playable with open chords and no capo: G, C, D, A or E major, or E, A or D minor (`#/musicians?easy=1`).
+- Opening a playlist shows its own page (`#/musicians/playlist/<key>`), like the curator's: track removal and **Create in Spotify**, so the playlist is easy to find in Spotify while you play. Each song also shows its key, a capo hint, **Chords ↗** (an [Ultimate Guitar](https://www.ultimate-guitar.com) search for the artist and title) and **Play ↗** (the track on open.spotify.com), both in a new tab.
+- While keys are still being looked up and there are no key playlists yet, it says so and the background-lookup panel shows the progress.
+
+Capo hints (`capoHint` in `src/musicians-corner/guitar.ts`) pick the lowest capo fret that lets you play the key with open shapes of the same mode: G, C, D, A, E for major keys, Em, Am, Dm for minor ones. F major is "Capo 1 · E shapes" (play the chords a semitone lower, as E shapes; or capo 3 with D shapes); every key needs at most a capo on fret 4.
+
+### How the new tab arrives signed in
+
+The sign-in token and library live in each tab's `sessionStorage`, so a plain new tab would start signed out. The header link carries a one-off nonce (`/?handoff=<nonce>#/musicians`); the new tab asks for its session over a same-origin [`BroadcastChannel`](https://developer.mozilla.org/docs/Web/API/BroadcastChannel), and only the tab that made that link answers, with the token and the `curator.cache.v1.*` entries (never the PKCE verifier). The new tab copies them into its own `sessionStorage`, drops the nonce from the address, and loads from that cache without refetching the library. Nothing passes through `localStorage` or disk, so tokens still vanish when the tabs close. If no tab answers within 4 seconds (the curator tab was closed or signed out), the new tab offers **Connect Spotify** and returns to the corner after signing in.
+
+The tabs stay in step afterwards: **Sign out** in any tab signs out every curator tab (each clears its own session data, and the shared lookup cache is cleared as before), and a refreshed token is passed to tabs holding the refresh token it replaced. Key and genre lookups run in one tab at a time (a [Web Lock](https://developer.mozilla.org/docs/Web/API/Web_Locks_API)), so a second tab never doubles the request rate to the lookup services; a waiting tab picks up the results the other one saves. Removals, created playlists and a different set are per tab after the handoff.
+
 ## Setup
 
 You need Node.js 20.19 or newer and a Spotify developer app. Spotify requires the app owner to have Premium for Development Mode apps.
@@ -91,7 +112,7 @@ npm run build     # typecheck + production build
 | `src/curate.ts` | Pure curation logic (no network, no DOM), including alternative sets and kept suggestions, tested in `test/curate.test.ts` with fixture data |
 | `src/builder.ts` | Pure "Build your own" matching and picking, tested in `test/builder.test.ts` |
 | `src/browse.ts` | Pure sort and filter logic for the suggestions |
-| `src/route.ts` | Pure hash routes: the recommendations (sort and filters in the query) and playlist pages |
+| `src/route.ts` | Pure hash routes: the recommendations (sort and filters in the query), playlist pages, and the Musicians Corner |
 | `src/removed-store.ts` | Tracks removed from suggestions, kept for the session |
 | `src/saved.ts` | Pure matching of suggestions against the playlists already in your Spotify, tested with `test/fixtures/saved-playlists.ts` |
 | `src/spotify.ts` | Spotify Web API client: paging, 429 `Retry-After`, 401 refresh, playlist creation, reading your own playlists |
@@ -101,7 +122,12 @@ npm run build     # typecheck + production build
 | `src/musicbrainz.ts` | Artist matching (pure) and genre lookups via MusicBrainz |
 | `src/auth.ts` | PKCE sign-in and token refresh |
 | `src/library.ts` | Loads and caches library data (for the session) and key and genre lookups (in the browser) |
-| `src/main.ts` | The page |
+| `src/musicians-corner/guitar.ts` | Pure capo hints, easy-key filter and play-along links (Ultimate Guitar search, open.spotify.com), tested in `test/musicians-corner.test.ts` |
+| `src/musicians-corner/handoff.ts` | Hands the sign-in and session cache to the Musicians Corner tab and keeps tabs in step (sign-out, token refresh), tested in `test/handoff.test.ts` |
+| `src/musicians-corner/shared-lookups.ts` | Lets one tab at a time run the key and genre lookups |
+| `src/musicians-corner/view.ts` | The Musicians Corner page and its extra track columns |
+| `src/dom.ts` | Tiny DOM helpers shared by the views |
+| `src/main.ts` | The page: routes, the curator views, playlist pages |
 
 ## Spotify API usage
 
@@ -136,6 +162,7 @@ Spotify has closed musical keys (audio features) to new developer apps and depre
 | [ReccoBeats](https://reccobeats.com) | Musical keys | The Spotify track IDs of your liked songs |
 | [Wikidata](https://www.wikidata.org) | Artist genres and MusicBrainz artist IDs | Spotify artist IDs |
 | [MusicBrainz](https://musicbrainz.org) | Genres for artists Wikidata has none for | Spotify artist IDs, artist names, MusicBrainz artist IDs, and the ISRC recording codes of liked songs |
+| [Ultimate Guitar](https://www.ultimate-guitar.com) | Nothing to the page: **Chords ↗** in the [Musicians Corner](#musicians-corner) opens its search in a new tab | Only when you click **Chords ↗**: that song's artist and title, in the search address your browser opens |
 
 None of them receive your Spotify account, sign-in or listening history. Results are cached per song or artist in `localStorage`, so later visits (and **Refresh data**) only look up what is new; **Sign out** clears them.
 

@@ -15,6 +15,7 @@ import {
   type BuildCriteria,
 } from './builder';
 import { REDIRECT_URI, configuredClientId } from './config';
+import { ICONS, button, h, icon, type Child } from './dom';
 import {
   camelot,
   curate,
@@ -31,6 +32,7 @@ import {
 import {
   cachedEnrichment,
   enrichmentProgress,
+  mergeEnrichment,
   openGenres,
   runEnrichment,
   type EnrichmentData,
@@ -41,14 +43,17 @@ import { loadLibrary, type LibrarySnapshot } from './library';
 import { MusicBrainzClient } from './musicbrainz';
 import { mapWithConcurrency } from './http';
 import { ReccoBeatsClient } from './reccobeats';
-import { homeHref, parseRoute, playlistHref, type Route } from './route';
-import { SessionCache, browserCache } from './session-cache';
+import { formatRoute, homeHref, isMusiciansRoute, musiciansHref, musiciansPlaylistHref, parentRoute, parseRoute, playlistHref, type Route } from './route';
+import { CACHE_PREFIX, SessionCache, browserCache } from './session-cache';
 import { CreatedStore } from './created-store';
 import { RemovedStore } from './removed-store';
 import { APP_TAG, matchSaved, playlistDescription, setAsideSaved, type SavedMatch } from './saved';
 import { SpotifyClient, type CreatedPlaylist } from './spotify';
 import type { CuratedPlaylist, LikedTrack, PlaylistKind, SavedPlaylist, SavedTracks, TrackKey } from './types';
 import { WikidataClient } from './wikidata';
+import { CHANNEL_NAME, HANDOFF_PARAM, TabLink, handoffHref, handoffNonce, receiveSession } from './musicians-corner/handoff';
+import { withLookupLock, type Locks } from './musicians-corner/shared-lookups';
+import { musicianColumns, musiciansHome, type TrackColumn } from './musicians-corner/view';
 
 const app = document.getElementById('app') as HTMLElement;
 const cache = new SessionCache();
@@ -90,8 +95,9 @@ function nextGeneration(): number {
 }
 
 // ---------------------------------------------------------------------------
-// Routing: the recommendations (#/, with sort and filters in the query) and one
-// page per playlist (#/playlist/<key>). See src/route.ts.
+// Routing: the recommendations (#/, with sort and filters in the query), one page per
+// playlist (#/playlist/<key>), and the Musicians Corner (#/musicians…, usually in a tab of
+// its own; see src/musicians-corner/). See src/route.ts.
 
 let route: Route = parseRoute(location.hash);
 /** Scroll position of the recommendations when a playlist was opened, for the return trip. */
@@ -104,16 +110,17 @@ let activeView: { navigate: (from: Route) => void } | undefined;
 window.addEventListener('hashchange', () => {
   const from = route;
   route = parseRoute(location.hash);
-  // Marks a playlist page opened from the recommendations, so Back can step back to them
-  // (with their sort, filters and scroll) even after a reload.
-  if (route.name === 'playlist') mergeHistoryState({ fromHome: from.name === 'home' });
+  // Marks a playlist page opened from the page its Back button returns to, so Back can
+  // step back there (with its sort, filters and scroll) even after a reload.
+  const parent = parentRoute(route, DEFAULT_CRITERIA);
+  if (parent) mergeHistoryState({ fromHome: from.name === parent.name });
   activeView?.navigate(from);
 });
 
 interface EntryState {
   /** Scroll position of the recommendations when a playlist was opened from them. */
   scrollY?: number;
-  /** This playlist page was opened from the recommendations entry right before it. */
+  /** This playlist page was opened from the entry right before it, the page its Back returns to (recommendations or Musicians Corner). */
   fromHome?: boolean;
 }
 
@@ -140,50 +147,11 @@ function savedHomeScroll(): number {
   return historyState().scrollY ?? homeScrollY;
 }
 
-/** Back to the recommendations: a real history step when they are the previous page, else a new one. */
-function backToRecommendations(criteria: BrowseCriteria) {
+/** Back to the page a playlist page belongs to: a real history step when it is the previous page, else a new one. */
+function backToParent(criteria: BrowseCriteria) {
+  const parent = parentRoute(route, criteria);
   if (historyState().fromHome) history.back();
-  else location.hash = homeHref(criteria);
-}
-
-type Child = Node | string | null | undefined | false;
-
-function h(tag: string, attrs: Record<string, string> = {}, ...children: Child[]): HTMLElement {
-  const el = document.createElement(tag);
-  for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, value);
-  for (const child of children) if (child) el.append(child);
-  return el;
-}
-
-const ICONS = {
-  note: 'M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6Z',
-  tag: 'M21.4 11.6 12.4 2.6A2 2 0 0 0 11 2H4a2 2 0 0 0-2 2v7c0 .55.22 1.05.59 1.42l9 9a2 2 0 0 0 2.82 0l7-7a2 2 0 0 0 0-2.82ZM6.5 8A1.5 1.5 0 1 1 6.5 5a1.5 1.5 0 0 1 0 3Z',
-  shuffle:
-    'M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41ZM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5Zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13Z',
-  check: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17Z',
-  sun: 'M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10ZM2 13h2v-2H2v2Zm18 0h2v-2h-2v2ZM11 2v2h2V2h-2Zm0 18v2h2v-2h-2ZM5.99 4.58 4.58 5.99l1.41 1.42L7.41 6 5.99 4.58Zm12.02 12.03-1.41 1.41 1.41 1.42 1.42-1.42-1.42-1.41ZM19.42 6 18 4.58 16.59 6 18 7.41 19.42 6ZM7.41 18.01 6 16.59l-1.42 1.42L6 19.42l1.41-1.41Z',
-  moon: 'M12.3 22a10 10 0 0 1-2.9-19.57A8 8 0 0 0 21.57 14.6 10 10 0 0 1 12.3 22Z',
-  back: 'M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2Z',
-  filter: 'M10 18h4v-2h-4v2ZM3 6v2h18V6H3Zm3 7h12v-2H6v2Z',
-  bars: 'M10 20h4V4h-4v16Zm-6 0h4v-8H4v8Zm12-11v11h4V9h-4Z',
-  close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41Z',
-} as const;
-
-function icon(name: keyof typeof ICONS): SVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('aria-hidden', 'true');
-  svg.setAttribute('class', 'icon');
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', ICONS[name]);
-  svg.append(path);
-  return svg;
-}
-
-function button(label: Child | Child[], attrs: Record<string, string>, onClick: () => void): HTMLButtonElement {
-  const el = h('button', { type: 'button', ...attrs }, ...(Array.isArray(label) ? label : [label])) as HTMLButtonElement;
-  el.addEventListener('click', onClick);
-  return el;
+  else location.hash = parent ? formatRoute(parent) : homeHref(criteria);
 }
 
 function show(...nodes: Child[]) {
@@ -247,9 +215,18 @@ async function start() {
     return;
   }
 
-  const auth = new SpotifyAuth({ clientId, redirectUri: REDIRECT_URI, storage: sessionStorage });
+  const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel(CHANNEL_NAME);
+  const auth = new SpotifyAuth({
+    clientId,
+    redirectUri: REDIRECT_URI,
+    storage: sessionStorage,
+    onTokenStored: (token, previous) => tabLink?.tokenStored(token, previous),
+  });
+  // Another tab signing out signs this one out too (see src/musicians-corner/handoff.ts).
+  if (channel) tabLink = new TabLink(channel, sessionStorage, () => auth.isSignedIn() && signOutHere(auth));
 
   if (location.pathname === '/callback') {
+    const back = takeReturnHash();
     try {
       await auth.handleCallback(location.search);
     } catch (err) {
@@ -257,7 +234,24 @@ async function start() {
       showSignIn(auth, errorText(err));
       return;
     }
-    history.replaceState(null, '', '/');
+    history.replaceState(null, '', `/${back}`);
+    route = parseRoute(location.hash);
+  }
+
+  // The Musicians Corner tab picks up the sign-in and library of the tab that opened it.
+  const nonce = handoffNonce(location.search);
+  if (nonce) {
+    if (!auth.isSignedIn() && channel) {
+      show(h('section', { class: 'panel center' }, brand(), h('h1', {}, 'Opening the Musicians Corner'), h('div', { class: 'spinner', 'aria-hidden': 'true' })));
+      await receiveSession(channel, sessionStorage, nonce);
+    }
+    const url = new URL(location.href);
+    url.searchParams.delete(HANDOFF_PARAM);
+    history.replaceState(history.state, '', url.pathname + url.search + url.hash);
+    if (!auth.isSignedIn()) {
+      showSignIn(auth, 'Could not pick up the sign-in from the curator tab (it may have been closed or signed out). Connect Spotify here instead.');
+      return;
+    }
   }
 
   if (!auth.isSignedIn()) {
@@ -267,8 +261,46 @@ async function start() {
   await showCurator(auth);
 }
 
+function lookupLocks(): Locks | undefined {
+  return 'locks' in navigator ? navigator.locks : undefined;
+}
+
+/** This tab's end of the cross-tab channel; unset where BroadcastChannel is unavailable. */
+let tabLink: TabLink | undefined;
+/** The page to come back to after signing in, since Spotify redirects to /callback. */
+const RETURN_HASH_KEY = 'curator.return-hash';
+
+function rememberReturnHash() {
+  try {
+    sessionStorage.setItem(RETURN_HASH_KEY, location.hash);
+  } catch {
+    // Signing in lands on the recommendations instead.
+  }
+}
+
+function takeReturnHash(): string {
+  try {
+    const hash = sessionStorage.getItem(RETURN_HASH_KEY) ?? '';
+    sessionStorage.removeItem(RETURN_HASH_KEY);
+    return hash.startsWith('#/') ? hash : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Signs this tab out: stops its work and clears the session cache, lookup results and token. */
+function signOutHere(auth: SpotifyAuth) {
+  nextGeneration();
+  createdStore.reset();
+  cache.clear();
+  lookupCache.clear();
+  auth.signOut();
+  showSignIn(auth);
+}
+
 function brand(): HTMLElement {
-  return h('div', { class: 'brand' }, h('span', { class: 'brand-mark', 'aria-hidden': 'true' }, icon('note')), 'Liked Songs Curator');
+  const name = isMusiciansRoute(route) ? 'Musicians Corner' : 'Liked Songs Curator';
+  return h('div', { class: 'brand' }, h('span', { class: 'brand-mark', 'aria-hidden': 'true' }, icon('note')), name);
 }
 
 function showSetup() {
@@ -301,6 +333,7 @@ function showSetup() {
 function showSignIn(auth: SpotifyAuth, error?: string) {
   const connect = button('Connect Spotify', { class: 'primary large' }, async () => {
     connect.disabled = true;
+    rememberReturnHash();
     location.assign(await auth.authorizeUrl());
   });
   show(
@@ -463,11 +496,27 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
     state.stop = () => stop.abort();
     state.status = { keys: { state: 'running', errors: [] }, genres: { state: 'running', errors: [] } };
     const clients = { spotify: client, reccoBeats, wikidata, musicBrainz };
-    void runEnrichment(library.liked, lookupCache, clients, state.enrich, state.status, view.changed, {
-      teardown: signal,
-      stop: stop.signal,
-    }).then(() => {
+    // One tab at a time runs the lookups (src/musicians-corner/shared-lookups.ts); while
+    // another one does, this tab takes in the results it saves to the shared cache.
+    let ran = false;
+    const pickUp = (e: StorageEvent) => {
+      if (ran || !e.key?.startsWith(CACHE_PREFIX)) return;
+      mergeEnrichment(state.enrich, cachedEnrichment(lookupCache));
+      view.changed();
+    };
+    window.addEventListener('storage', pickUp);
+    void withLookupLock(lookupLocks(), AbortSignal.any([signal, stop.signal]), async () => {
+      ran = true;
+      mergeEnrichment(state.enrich, cachedEnrichment(lookupCache));
+      await runEnrichment(library.liked, lookupCache, clients, state.enrich, state.status, view.changed, {
+        teardown: signal,
+        stop: stop.signal,
+      });
+    }).then((didRun) => {
+      window.removeEventListener('storage', pickUp);
       if (signal.aborted) return;
+      // Stopped while another tab had the lookups: nothing ran here.
+      if (!didRun) state.status = { keys: { state: 'stopped', errors: [] }, genres: { state: 'stopped', errors: [] } };
       state.stop = undefined;
       view.changed();
     });
@@ -710,7 +759,10 @@ function createCuratorView(
       if (state.saved.status === 'needs-consent') {
         parts.push(
           'To recognize playlists you saved in earlier sessions, Spotify needs to let this page read your playlists. ',
-          button('Reconnect Spotify', { class: 'link-button' }, async () => location.assign(await auth.authorizeUrl())),
+          button('Reconnect Spotify', { class: 'link-button' }, async () => {
+            rememberReturnHash();
+            location.assign(await auth.authorizeUrl());
+          }),
         );
       } else if (state.saved.status === 'error') {
         parts.push(`Could not read your playlists (${state.saved.error}), so recommendations saved in earlier sessions may show again.`);
@@ -782,8 +834,50 @@ function createCuratorView(
     };
   };
 
-  const renderPlaylist = (key: string) => {
-    const isBuilt = key === BUILT_KEY;
+  /** The Musicians Corner home (src/musicians-corner/view.ts) over the current suggestions. */
+  const renderMusicians = (initialEasy: boolean) => {
+    let easy = initialEasy;
+    let cur = curateNow();
+    const page = h('div', { class: 'corner-page' });
+    const items = () => [...cur.freshItems, ...cur.savedItems];
+    const keysLoading = () => state.status.keys.state === 'running';
+    /** What the page shows, so it is only redrawn when that changes. */
+    const signature = () =>
+      JSON.stringify([easy, keysLoading(), items().map((i) => [trackSignature(i.playlist), cur.savedMatches.get(i.playlist.key)?.playlist.id])]);
+    let drawn = '';
+    const draw = () => {
+      drawn = signature();
+      const ui = {
+        cover,
+        createControls: (p: CuratedPlaylist) => createControls(client, p, cur.savedMatches.get(p.key)),
+        saved: (p: CuratedPlaylist) => cur.savedMatches.has(p.key),
+        beforeOpen: rememberHomeScroll,
+      };
+      page.replaceChildren(musiciansHome({ playlists: items().map((i) => i.playlist), easy, keysLoading: keysLoading() }, ui, setEasy));
+    };
+    const setEasy = (next: boolean) => {
+      easy = next;
+      route = { name: 'musicians', easy };
+      history.replaceState(history.state, '', musiciansHref(easy));
+      draw();
+      app.querySelector<HTMLElement>('#easy-keys')?.focus();
+    };
+    show(topBar(auth), page);
+    draw();
+    fetchNeededTracks(cur);
+
+    refresh = () => {
+      cur = curateNow();
+      fetchNeededTracks(cur);
+      if (signature() === drawn) return;
+      const focusedToggle = document.activeElement?.id === 'easy-keys';
+      draw();
+      if (focusedToggle) app.querySelector<HTMLElement>('#easy-keys')?.focus();
+    };
+  };
+
+  const renderPlaylist = (key: string, musician = false) => {
+    const isBuilt = key === BUILT_KEY && !musician;
     const find = () => {
       const cur = curateNow();
       const built = isBuilt ? state.build.built : undefined;
@@ -799,7 +893,7 @@ function createCuratorView(
     let shown = find();
     /** Offers the playlist as newly curated, instead of changing its tracks under the reader. */
     const notice = h('div', { class: 'update-notice', role: 'status', hidden: '' });
-    const back = () => backToRecommendations(state.criteria);
+    const back = () => backToParent(state.criteria);
     const edit = (change: () => void, focus: () => HTMLElement | null | undefined) => {
       change();
       shown = find();
@@ -849,8 +943,9 @@ function createCuratorView(
               { removed, ...editing },
               back,
               isBuilt && state.build.built && builtControls(state.build.built, retry),
+              musician ? { columns: musicianColumns(state.enrich.keys), backLabel: 'Back to Musicians Corner' } : undefined,
             )
-          : missingPlaylistPage(state, back, isBuilt),
+          : missingPlaylistPage(state, back, isBuilt, musician),
       );
     };
     const retry = () => {
@@ -894,7 +989,10 @@ function createCuratorView(
 
   const render = () => {
     if (!isCurrent()) return;
+    document.title = isMusiciansRoute(route) ? 'Musicians Corner · Liked Songs Curator' : 'Liked Songs Curator';
     if (route.name === 'playlist') renderPlaylist(route.key);
+    else if (route.name === 'musicians-playlist') renderPlaylist(route.key, true);
+    else if (route.name === 'musicians') renderMusicians(route.easy);
     else renderHome();
   };
 
@@ -955,6 +1053,14 @@ function createCuratorView(
       if (card) card.focus({ preventScroll: true });
       return;
     }
+    if (route.name === 'musicians') {
+      render();
+      if (from.name === 'musicians') return;
+      window.scrollTo(0, savedHomeScroll());
+      const href = lastPlaylistKey && musiciansPlaylistHref(lastPlaylistKey, route.easy);
+      if (href) app.querySelector<HTMLAnchorElement>(`a.card-link[href="${CSS.escape(href)}"]`)?.focus({ preventScroll: true });
+      return;
+    }
     render();
     window.scrollTo(0, 0);
     app.querySelector<HTMLElement>('.playlist-page h1')?.focus({ preventScroll: true });
@@ -977,14 +1083,26 @@ function topBar(auth: SpotifyAuth): HTMLElement {
     void showCurator(auth, true);
   });
   const signOut = button('Sign out', { class: 'ghost' }, () => {
-    nextGeneration();
-    createdStore.reset();
-    cache.clear();
-    lookupCache.clear();
-    auth.signOut();
-    showSignIn(auth);
+    signOutHere(auth);
+    tabLink?.signedOut();
   });
-  return h('header', { class: 'topbar' }, brand(), h('div', { class: 'actions' }, themeToggle(), refresh, signOut));
+  // A real new tab that arrives signed in with this tab's data (src/musicians-corner/handoff.ts).
+  const corner =
+    !isMusiciansRoute(route) &&
+    h(
+      'a',
+      {
+        class: 'button ghost corner-link',
+        href: tabLink ? handoffHref(tabLink.offer(), musiciansHref(false)) : `/${musiciansHref(false)}`,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        title: 'Key playlists with capo hints, chords and play links (opens in a new tab)',
+      },
+      'Musicians Corner ',
+      h('span', { 'aria-hidden': 'true' }, '↗'),
+      h('span', { class: 'visually-hidden' }, '(opens in a new tab)'),
+    );
+  return h('header', { class: 'topbar' }, brand(), h('div', { class: 'actions' }, corner, themeToggle(), refresh, signOut));
 }
 
 function hero(state: CuratorState, result: CurationResult): HTMLElement {
@@ -1125,6 +1243,13 @@ const DATA_SOURCES: DataSource[] = [
     url: 'https://musicbrainz.org',
     gives: 'Genres for artists Wikidata has none for, at the one request a second it asks for.',
     receives: 'Spotify artist IDs, artist names, MusicBrainz artist IDs, and the ISRC recording codes of liked songs.',
+  },
+  {
+    icon: 'note',
+    name: 'Ultimate Guitar',
+    url: 'https://www.ultimate-guitar.com',
+    gives: 'Nothing to this page: Chords ↗ in the Musicians Corner opens its chord search in a new tab.',
+    receives: 'Only when you click Chords ↗: that song’s artist and title, in the search address.',
   },
 ];
 
@@ -1839,11 +1964,13 @@ function playlistPage(
   editing: TrackEditing & { removed: LikedTrack[] },
   onBack: () => void,
   extra?: HTMLElement | false,
+  /** Extra track columns and Back label, for the Musicians Corner's version of the page. */
+  variant?: { columns: TrackColumn[]; backLabel: string },
 ): HTMLElement {
   return h(
     'article',
-    { class: 'playlist-page', 'aria-labelledby': 'playlist-title' },
-    backButton(onBack, p.kind === 'custom' ? 'Back to Build your own' : undefined),
+    { class: `playlist-page${variant ? ' corner-playlist' : ''}`, 'aria-labelledby': 'playlist-title' },
+    backButton(onBack, variant?.backLabel ?? (p.kind === 'custom' ? 'Back to Build your own' : undefined)),
     h(
       'header',
       { class: 'playlist-hero' },
@@ -1866,7 +1993,7 @@ function playlistPage(
       ),
     ),
     p.tracks.length > 0
-      ? trackTable(p.tracks, known, editing.remove)
+      ? trackTable(p.tracks, known, editing.remove, variant?.columns)
       : h('p', { class: 'muted empty' }, 'You removed every track from this playlist. Restore some below to create it.'),
     editing.removed.length > 0 && removedTracks(editing),
   );
@@ -1898,7 +2025,7 @@ function removedTracks(editing: TrackEditing & { removed: LikedTrack[] }): HTMLE
   );
 }
 
-function missingPlaylistPage(state: CuratorState, onBack: () => void, built: boolean): HTMLElement {
+function missingPlaylistPage(state: CuratorState, onBack: () => void, built: boolean, musician = false): HTMLElement {
   if (built) {
     return h(
       'section',
@@ -1916,7 +2043,7 @@ function missingPlaylistPage(state: CuratorState, onBack: () => void, built: boo
   return h(
     'section',
     { class: 'playlist-page' },
-    backButton(onBack),
+    backButton(onBack, musician ? 'Back to Musicians Corner' : undefined),
     h(
       'div',
       { class: 'panel missing' },
@@ -1936,6 +2063,7 @@ function trackTable(
   tracks: LikedTrack[],
   known: { artistGenres: Record<string, string[]>; trackKeys: Record<string, TrackKey | null> },
   onRemove: (t: LikedTrack) => void,
+  columns: TrackColumn[] = [],
 ): HTMLElement {
   const rows = tracks.map((t) => {
     const key = known.trackKeys[t.id];
@@ -1964,6 +2092,7 @@ function trackTable(
         h('th', { class: 'col-year', scope: 'col' }, 'Year'),
         hasKey && h('th', { class: 'col-key', scope: 'col' }, 'Key'),
         hasGenre && h('th', { class: 'col-genre', scope: 'col' }, 'Genre'),
+        ...columns.map((c) => h('th', { class: c.cls, scope: 'col' }, c.header)),
         h('th', { class: 'col-remove' }, h('span', { class: 'visually-hidden' }, 'Remove')),
       ),
     ),
@@ -1993,6 +2122,7 @@ function trackTable(
           cell('col-year', year === null ? '' : String(year)),
           hasKey && cell('col-key', key),
           hasGenre && cell('col-genre', genres),
+          ...columns.map((c) => cell(c.cls, c.cell(t))),
           cell(
             'col-remove',
             button(icon('close'), { class: 'icon-button remove', 'data-remove': t.id, 'aria-label': `Remove ${t.name} from this playlist`, title: 'Remove from this playlist' }, () =>

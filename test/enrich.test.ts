@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   cachedEnrichment,
   enrichmentProgress,
+  mergeEnrichment,
   openGenres,
   runEnrichment,
   type EnrichmentClients,
@@ -20,6 +21,24 @@ const status = (keys: 'running' | 'done', genres: 'running' | 'done'): Enrichmen
   genres: { state: genres, errors: [] },
 });
 const key: TrackKey = { key: 9, mode: 0 };
+
+describe('mergeEnrichment', () => {
+  it('adds what another tab saved and keeps what this tab already has', () => {
+    const mine: EnrichmentData = { ...empty(), keys: { a: key, b: null }, spotify: { x: ['rock'] }, genreNames: undefined };
+    const saved: EnrichmentData = {
+      ...empty(),
+      keys: { b: key, c: key },
+      spotify: { x: [], y: ['jazz'] },
+      musicBrainz: { y: { mbid: 'm', genres: ['jazz'] } as ArtistGenreMatch },
+      genreNames: ['rock', 'jazz'],
+    };
+    mergeEnrichment(mine, saved);
+    expect(mine.keys).toEqual({ a: key, b: null, c: key });
+    expect(mine.spotify).toEqual({ x: ['rock'], y: ['jazz'] });
+    expect(Object.keys(mine.musicBrainz)).toEqual(['y']);
+    expect(mine.genreNames).toEqual(['rock', 'jazz']);
+  });
+});
 
 describe('openGenres', () => {
   it('merges Wikidata genres (as MusicBrainz genre names) with MusicBrainz genres per artist', () => {

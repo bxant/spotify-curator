@@ -15,7 +15,8 @@ export const SCOPES = [
 
 const VERIFIER_KEY = 'curator.pkce.verifier';
 const STATE_KEY = 'curator.pkce.state';
-const TOKEN_KEY = 'curator.token';
+/** Where the signed-in token lives in the tab's storage (shared with other tabs by src/musicians-corner/handoff.ts). */
+export const TOKEN_KEY = 'curator.token';
 /** Refresh this long before the access token actually expires. */
 const EXPIRY_MARGIN_MS = 60_000;
 
@@ -25,6 +26,8 @@ export interface AuthConfig {
   storage: Storage;
   fetch?: typeof fetch;
   now?: () => number;
+  /** Called after a new token is stored, with the one it replaced. */
+  onTokenStored?: (token: StoredToken, previous: StoredToken | null) => void;
 }
 
 export interface StoredToken {
@@ -185,6 +188,7 @@ export class SpotifyAuth {
       scope: json.scope ?? previous?.scope,
     };
     this.config.storage.setItem(TOKEN_KEY, JSON.stringify(token));
+    this.config.onTokenStored?.(token, previous);
     return token.accessToken;
   }
 

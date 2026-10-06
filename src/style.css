@@ -669,6 +669,71 @@ body:has(.dock) main { padding-bottom: 160px; }
   .track-table .col-year { width: 3.5rem; padding-right: 0; }
 }
 
+/* Musicians Corner (src/musicians-corner/) -------------------------------- */
+
+.button.small { padding: 4px 12px; font-size: 0.8rem; }
+.corner-link { white-space: nowrap; }
+.corner {
+  margin-top: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface) 35%, var(--bg));
+  overflow: hidden;
+}
+.corner-head { display: grid; gap: 10px; padding: 24px 20px 4px; }
+.corner-head h1 { font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 800; }
+.corner-head h1:focus { outline: none; }
+.corner-head > p { max-width: 72ch; }
+.corner-head .eyebrow { text-transform: uppercase; letter-spacing: 0.08em; }
+.easy-toggle {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.easy-toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); flex: none; }
+.corner .empty { padding: 4px 20px 24px; }
+.corner-loading { display: grid; gap: 10px; justify-items: start; margin: 4px 20px 24px; }
+.badge.easy { color: var(--accent-text); background: var(--accent); border-radius: 999px; padding: 0 8px; }
+.capo-advice { font-size: 0.9rem; }
+.corner-playlist .track-table .col-genre { display: none; }
+.track-table .col-capo { width: 9.5rem; }
+.track-table .col-links { width: 11rem; overflow: visible; }
+.track-table .capo.easy { color: var(--link); font-weight: 700; }
+.play-links { display: flex; gap: 6px; }
+.play-links .button { position: relative; z-index: 1; }
+
+@media (max-width: 860px) {
+  .corner-playlist .track-table .col-album { display: none; }
+}
+/* Narrow screens: each song becomes a small block, so key, capo and links stay readable. */
+@media (max-width: 680px) {
+  .corner-playlist .track-table, .corner-playlist .track-table tbody { display: block; }
+  .corner-playlist .track-table thead { display: none; }
+  .corner-playlist .track-table tr {
+    display: grid;
+    grid-template-columns: 2rem minmax(0, 1fr) minmax(0, 1fr) auto;
+    grid-template-areas: 'n title title remove' '. key capo .' '. links links .';
+    gap: 2px 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .corner-playlist .track-table td { padding: 0; width: auto; }
+  .corner-playlist .track-table .col-n { grid-area: n; align-self: center; }
+  .corner-playlist .track-table .col-title { grid-area: title; }
+  .corner-playlist .track-table .col-key { grid-area: key; display: block; white-space: normal; }
+  .corner-playlist .track-table .col-capo { grid-area: capo; white-space: normal; }
+  .corner-playlist .track-table .col-links { grid-area: links; padding-top: 4px; }
+  .corner-playlist .track-table .col-remove { grid-area: remove; align-self: center; }
+  .corner-playlist .track-table .col-album, .corner-playlist .track-table .col-year { display: none; }
+}
+
 /* Curate-a-different-set dialog ------------------------------------------- */
 
 .dialog {
