@@ -21,8 +21,8 @@ export interface CurationOptions {
   now: Date;
   /** Genres per artist ID from Spotify. Artists missing here (or with []) have no known genre. */
   artistGenres?: Record<string, string[]>;
-  /** Extra genres per artist ID cross-referenced from MusicBrainz; merged with Spotify's. */
-  musicBrainzGenres?: Record<string, string[]>;
+  /** Extra genres per artist ID from Wikidata and MusicBrainz; merged with Spotify's. */
+  openGenres?: Record<string, string[]>;
   /** Musical key per track ID; missing or null means unknown. */
   trackKeys?: Record<string, TrackKey | null>;
   /**
@@ -102,9 +102,9 @@ export function curate(
   const scores = playScores(tracks, history);
   const stacks = detectAlbumStacks(tracks);
   const thinned = thinAlbumStacks(tracks, stacks, scores);
-  const mbGenres = options.musicBrainzGenres;
-  const genres = mergeGenres(options.artistGenres ?? {}, mbGenres ?? {});
-  const genreSource = mbGenres && Object.keys(mbGenres).length > 0 ? 'on Spotify or MusicBrainz' : '';
+  const openGenres = options.openGenres;
+  const genres = mergeGenres(options.artistGenres ?? {}, openGenres ?? {});
+  const genreSource = openGenres && Object.keys(openGenres).length > 0 ? 'on Spotify, Wikidata or MusicBrainz' : '';
   const keys = options.trackKeys ?? {};
   const mix = new Mix(options.variant ?? 0);
   const exclude = options.exclude ?? new Set<string>();

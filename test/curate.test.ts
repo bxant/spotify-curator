@@ -357,16 +357,16 @@ describe('curate: artists', () => {
   });
 });
 
-describe('curate: MusicBrainz genres', () => {
-  it('merges MusicBrainz genres with Spotify genres into shared genre playlists', () => {
+describe('curate: Wikidata and MusicBrainz genres', () => {
+  it('merges Wikidata and MusicBrainz genres with Spotify genres into shared genre playlists', () => {
     const liked = singles('g', 30, { artist: (i) => `ar${i % 10}` });
     const spotify: Record<string, string[]> = { ar0: ['Shoegaze'], ar1: ['shoegaze'] };
     const mb: Record<string, string[]> = {};
     for (let i = 2; i < 10; i++) mb[`ar${i}`] = ['shoegaze'];
-    const { playlists, stats } = curate(liked, history(), { now: NOW, artistGenres: spotify, musicBrainzGenres: mb });
+    const { playlists, stats } = curate(liked, history(), { now: NOW, artistGenres: spotify, openGenres: mb });
     const shoegaze = find(playlists, 'genre:shoegaze')!;
     expect(shoegaze.tracks).toHaveLength(30);
-    expect(shoegaze.reason).toContain('on Spotify or MusicBrainz');
+    expect(shoegaze.reason).toContain('on Spotify, Wikidata or MusicBrainz');
     expect(stats.tracksWithGenres).toBe(30);
   });
 

@@ -2,7 +2,7 @@
 
 A local web page that suggests playlists from your Spotify **Liked Songs** and creates the ones you pick as private playlists in your Spotify account. It is built for big libraries (thousands of liked songs) with lots of never-played likes and whole albums liked at once.
 
-It runs only on your machine at http://127.0.0.1:8888, in a Spotify-style dark theme (a light theme is one click away). Nothing is saved to disk except your config: fetched library data stays in the browser tab's `sessionStorage` and is gone when you close the tab. Only the optional MusicBrainz genre lookups (public artist data that is slow to redo) and your theme choice are kept in the browser's `localStorage`; **Sign out** clears the lookups.
+It runs only on your machine at http://127.0.0.1:8888, in a Spotify-style dark theme (a light theme is one click away). Nothing is saved to disk except your config: fetched library data stays in the browser tab's `sessionStorage` and is gone when you close the tab. Only the musical key and genre lookups (public data that is slow to redo, see [Data sources](#data-sources)) and your theme choice are kept in the browser's `localStorage`; **Sign out** clears the lookups.
 
 ## Suggested playlists
 
@@ -24,19 +24,19 @@ Sessions signed in before the app asked to read playlists see a **Reconnect Spot
 | **Rediscover: Liked, Then Forgotten** | Songs you liked one by one more than 90 days ago that never appear in your top tracks or recent plays. 50 picks spread across the years you liked them, at most 2 per artist. |
 | **Best of Each Album** | For albums you liked nearly whole in one sitting, only the tracks you actually play or liked on their own. |
 | **Artist: …** | Up to 6 of your most-liked and most-played artists (liked-song count and play signal count equally), one playlist each with up to 50 of their liked songs, played favorites first. Featured credits count. Artists need at least 8 liked songs. |
-| **Genre: …** | Up to 8 of your biggest artist genres (from Spotify, plus MusicBrainz once you click **Find more genres**), skipping genres that mostly repeat an earlier one. |
-| **Key of …** | Up to 6 of the most common musical keys (with the Camelot code for harmonic mixing). Only after you click **Find musical keys** (see [Musical key](#musical-key-reccobeats)). |
+| **Genre: …** | Up to 8 of your biggest artist genres (from Spotify, Wikidata and MusicBrainz, found in the background), skipping genres that mostly repeat an earlier one. |
+| **Key of …** | Up to 6 of the most common musical keys (with the Camelot code for harmonic mixing), found in the background (see [Musical key](#musical-key-reccobeats)). |
 | **The 1990s, …** | One playlist per release decade, in release order. |
 
 Genre, key and decade playlists hold at most 100 tracks: played favorites first, then unplayed songs spread across your liked-at timeline, at most 4 per artist. They use the album-thinned library, so an album you liked whole contributes only its played tracks (or one track if none were played).
 
 ### Sort and filter
 
-The **Sort & filter these playlists** toolbar at the top of **Your recommendations** only changes which suggestions are shown and in what order; it never curates new ones. It shows how many of the playlists match and has a **Clear filters** button. Sort the suggestions by type, decade, genre, key (Camelot order), artist or track count, and filter them by type, decade, genre, key, artist and size. A decade, genre or key describes a playlist when at least 20% of its tracks have it; an artist is listed for a playlist when at least 2 of its tracks are theirs. Each filter only offers values that match a suggestion. Genre filters include MusicBrainz genres, and key filters appear after **Find musical keys**.
+The **Sort & filter these playlists** toolbar at the top of **Your recommendations** only changes which suggestions are shown and in what order; it never curates new ones. It shows how many of the playlists match and has a **Clear filters** button. Sort the suggestions by type, decade, genre, key (Camelot order), artist or track count, and filter them by type, decade, genre, key, artist and size. A decade, genre or key describes a playlist when at least 20% of its tracks have it; an artist is listed for a playlist when at least 2 of its tracks are theirs. Each filter only offers values that match a suggestion, so genre and key filters fill in as the background lookups find genres and keys.
 
 ### Curate a different set
 
-**Curate a different set** (in the **Curation** section with the key and genre lookups) opens a confirmation listing the current suggestions. Check the ones to keep (already-created ones start checked): kept suggestions carry over exactly as they are, and the rest are replaced by an alternative set with different genre, key and artist picks where there are more candidates than fit, and a different selection and order of tracks. Each new set is reproducible and differs from the last. Playlists you already created stay in Spotify and stay linked in **Created in Spotify this session** at the top of the page. A reload keeps the current set; **Refresh data** goes back to the default set.
+**Curate a different set** (in the **Curation** section, above **Data sources**) opens a confirmation listing the current suggestions. Check the ones to keep (already-created ones start checked): kept suggestions carry over exactly as they are, and the rest are replaced by an alternative set with different genre, key and artist picks where there are more candidates than fit, and a different selection and order of tracks. Each new set is reproducible and differs from the last. Playlists you already created stay in Spotify and stay linked in **Created in Spotify this session** at the top of the page. A reload keeps the current set; **Refresh data** goes back to the default set.
 
 ### Build your own
 
@@ -77,7 +77,7 @@ npm start
 
 Then open http://127.0.0.1:8888 in your browser. On WSL2, the Windows browser reaches the WSL server through localhost forwarding. If you open `localhost:8888`, the page switches to `127.0.0.1` so sign-in works.
 
-Loading takes about a minute: ~80 pages of liked songs, then single-artist genre lookups in the background. Genre playlists appear when those finish. Key playlists appear only after you click **Find musical keys**, and MusicBrainz genres only after you click **Find more genres**. Both lookups show progress, can be stopped, and continue where they left off. **Refresh data** refetches your likes and listening history. Genres are only looked up for new artists, and keys for new tracks only when you click **Find musical keys** again.
+Loading your library takes under a minute (~90 pages of liked songs). The playlists that need no extra data (favorites, rediscover, albums, artists, decades) show up right away, and musical keys and genres are then [looked up in the background](#background-lookups): key and genre playlists appear and fill in as results arrive, without moving the cards you are looking at. **Refresh data** refetches your likes and listening history; keys and genres are only looked up for songs and artists that are new since the last lookup.
 
 ## Development
 
@@ -95,10 +95,12 @@ npm run build     # typecheck + production build
 | `src/removed-store.ts` | Tracks removed from suggestions, kept for the session |
 | `src/saved.ts` | Pure matching of suggestions against the playlists already in your Spotify, tested with `test/fixtures/saved-playlists.ts` |
 | `src/spotify.ts` | Spotify Web API client: paging, 429 `Retry-After`, 401 refresh, playlist creation, reading your own playlists |
+| `src/enrich.ts` | Background key and genre lookups: runs the services in order, merges their genres, counts progress |
 | `src/reccobeats.ts` | Musical key lookups via ReccoBeats |
+| `src/wikidata.ts` | Batched artist genre and MusicBrainz ID lookups via Wikidata |
 | `src/musicbrainz.ts` | Artist matching (pure) and genre lookups via MusicBrainz |
 | `src/auth.ts` | PKCE sign-in and token refresh |
-| `src/library.ts` | Loads and caches library data and enrichments for the session |
+| `src/library.ts` | Loads and caches library data (for the session) and key and genre lookups (in the browser) |
 | `src/main.ts` | The page |
 
 ## Spotify API usage
@@ -111,7 +113,7 @@ This app only uses endpoints that the Spotify Web API docs list as available to 
 | Liked Songs (with each track's ISRC from `external_ids`) | `GET /me/tracks` (50 per page) | `user-library-read` |
 | Top tracks / artists | `GET /me/top/{tracks,artists}` | `user-top-read` |
 | Recently played | `GET /me/player/recently-played` | `user-read-recently-played` |
-| Artist genres | `GET /artists/{id}` (one at a time) | none |
+| Artist genres | `GET /artists/{id}` (one at a time, only for artists other sources have no genres for) | none |
 | Your own playlists (to recognize saved suggestions) | `GET /me/playlists` (50 per page) | `playlist-read-private` |
 | Tracks of a few of your own playlists | `GET /playlists/{id}/items` | `playlist-read-private` |
 | Create playlist | `POST /me/playlists` (`public: false`) | `playlist-modify-private` |
@@ -124,18 +126,56 @@ Known limits:
 - Artist `genres` is marked deprecated and may be empty. Genre playlists use whatever Spotify returns, and the page says so when there are no genres.
 - If Spotify asks the app to wait more than 2 minutes (a long `Retry-After`), genre lookups stop and the page keeps the genres it already has.
 
+## Data sources
+
+Spotify has closed musical keys (audio features) to new developer apps and deprecated artist genres, so the page fills those gaps from free, open services that need no account or API key. The page names them, says what each one receives, and explains why under **Data sources** (in the **Curation** section, and in the background-lookup panel on every page):
+
+| Service | Gives | Receives |
+| --- | --- | --- |
+| Spotify | Profile, Liked Songs, top items, recent plays, any artist genres it still has; creates the playlists you pick | Your sign-in, and the playlists you create |
+| [ReccoBeats](https://reccobeats.com) | Musical keys | The Spotify track IDs of your liked songs |
+| [Wikidata](https://www.wikidata.org) | Artist genres and MusicBrainz artist IDs | Spotify artist IDs |
+| [MusicBrainz](https://musicbrainz.org) | Genres for artists Wikidata has none for | Spotify artist IDs, artist names, MusicBrainz artist IDs, and the ISRC recording codes of liked songs |
+
+None of them receive your Spotify account, sign-in or listening history. Results are cached per song or artist in `localStorage`, so later visits (and **Refresh data**) only look up what is new; **Sign out** clears them.
+
+### Background lookups
+
+Key and genre lookups start on their own once the library is loaded. A small panel in the bottom corner of every page says that the playlists shown are ready while it is still "Finding keys and genres… 1,240 of 4,512 songs", with a progress bar, **Stop** (keeps what was found; **Resume** continues), and the **Data sources** list. It ends with "Keys and genres are up to date" and how many songs have a key and genres, or says which service could not finish (with **Try again**) while the playlists use what was found. The panel can be shrunk to its icon.
+
+The lookups walk the whole library until every song is covered, most-liked artists first, in two lanes at once (`src/enrich.ts`):
+
+1. **Keys**: ReccoBeats, 40 tracks per request (its maximum), two requests at a time.
+2. **Genres**: Wikidata first, 250 artists per query. Then, for artists still without genres, MusicBrainz and Spotify's single-artist lookups side by side; each skips an artist another source has found genres for by the time its turn comes.
+
+While results arrive, the suggestions are re-curated at most every 3 seconds when the browser is idle (curating 4,500 songs takes about 50–120 ms). Cards that did not change stay on the page untouched, so the ones in view do not jump; new key and genre playlists fade in. A playlist's own page does not change its tracks under you: it offers **Show the update** instead.
+
+Measured in October 2026 against the live services, on a 4,500-song library of real Spotify tracks with 3,220 artists (more artists per song than most libraries), from an empty cache. Spotify's artist lookups were simulated as returning no genres, so they saved MusicBrainz no work:
+
+| | Keys done | 90% of songs settled | 95% | All done | Songs with genres |
+| --- | --- | --- | --- | --- | --- |
+| 1,249 artists unknown to Wikidata, but linked to Spotify on MusicBrainz | 23 s | 65 s | 83 s | **2 min 17 s** | 3,996 |
+| The same artists unknown to both (only ISRC and name matching left) | 22 s | 4 min 44 s | 5 min 26 s | 7 min 14 s | 3,695 |
+
+The first row is close to a typical library; the second is a worst case. Before this change, MusicBrainz alone (one artist at a time by ISRC or name) took about 17 minutes for a library this size. A later visit with everything cached makes no requests at all.
+
 ### Musical key (ReccoBeats)
 
-Spotify no longer gives new apps musical key data. Keys come from [ReccoBeats](https://reccobeats.com), a free third-party API with no API key that returns Spotify-style audio features by Spotify track ID (`GET https://api.reccobeats.com/v1/audio-features?ids=…`, 40 IDs per request). Key lookup is opt-in: nothing is sent to ReccoBeats until you click **Find musical keys**, and page loads and **Refresh data** never start it. It then sends the Spotify track IDs of your liked songs (and nothing else), two requests at a time, and honors its `Retry-After`. Tracks it doesn't know have no key. If ReccoBeats is down or rate-limits hard, the page skips key playlists and shows a note.
+Spotify no longer gives new apps musical key data. Keys come from [ReccoBeats](https://reccobeats.com), a free third-party API with no API key that returns Spotify-style audio features by Spotify track ID (`GET https://api.reccobeats.com/v1/audio-features?ids=…`, at most 40 IDs per request). Its [terms](https://reccobeats.com/docs/documentation/terms-of-service) allow free personal and commercial use but no abuse or overload, and its [rate limits](https://reccobeats.com/docs/documentation/rate-limiting) are not published beyond a `429` with `Retry-After` (checked October 2026). The page sends the Spotify track IDs of your liked songs (and nothing else), two requests at a time, and honors `Retry-After`. Tracks it doesn't know have no key. If ReccoBeats is down or rate-limits hard, the page skips key playlists and says so.
+
+### Genres (Wikidata)
+
+[Wikidata](https://www.wikidata.org) is the free knowledge base behind Wikipedia; its data is CC0. Many artists there carry their Spotify artist ID ([P1902](https://www.wikidata.org/wiki/Property:P1902)), their genres ([P136](https://www.wikidata.org/wiki/Property:P136)) and their MusicBrainz artist ID ([P434](https://www.wikidata.org/wiki/Property:P434)), so one SPARQL query (`POST https://query.wikidata.org/sparql`) answers for 250 Spotify artists in about a second. The query service allows each client 60 seconds of query time per minute and 5 parallel queries, and answers `429` with `Retry-After` beyond that ([limits](https://www.mediawiki.org/wiki/Wikidata_Query_Service/User_Manual#Query_limits), checked October 2026); the page runs one query at a time and honors `Retry-After`. It identifies itself with `User-Agent` and, since browsers may not let a page set that, `Api-User-Agent` (the same `spotify-curator/…` identity as for MusicBrainz below), as the [User-Agent policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy) asks. Wikidata's English genre labels are matched to MusicBrainz' genre list (so "rock music" becomes "rock" and "Hip-Hop" becomes "hip hop"); labels that are not genres there are dropped.
 
 ### Genres (MusicBrainz)
 
-Spotify's artist `genres` is deprecated and often empty, so genres can also come from [MusicBrainz](https://musicbrainz.org), the open music encyclopedia. Its API is free for non-commercial use with no API key; it asks for at most one request per second per IP and a User-Agent that identifies the app ([rate limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting), checked September 2026). Genre tags are MusicBrainz supplementary data under [CC BY-NC-SA](https://musicbrainz.org/doc/About/Data_License).
+[MusicBrainz](https://musicbrainz.org), the open music encyclopedia, covers artists Wikidata has no genres for. Its API is free for non-commercial use with no API key; it asks for at most one request per second per IP and a User-Agent that identifies the app ([rate limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting), checked October 2026). Genre tags are MusicBrainz supplementary data under [CC BY-NC-SA](https://musicbrainz.org/doc/About/Data_License).
 
-The lookup is opt-in like musical keys: nothing is sent until you click **Find more genres**. It then sends artist names and the ISRC codes of liked songs (and nothing else), 25 artists at a time:
+Artists are handled most-liked first, cheapest requests first:
 
-1. One recording search for the artists' ISRCs (`GET /ws/2/recording?query=isrc:… OR isrc:…`). An artist matches when the recordings with their track's ISRC credit exactly one MusicBrainz artist with the same name (ignoring case, accents and punctuation).
-2. For artists without an ISRC match, an exact-name artist search (`GET /ws/2/artist?query=artist:"…"`). Exactly one artist with that name matches; several (e.g. two bands called Nirvana) are skipped as ambiguous.
-3. One artist search for the matched artists' tags (`GET /ws/2/artist?query=arid:… OR arid:…`). Genres are tags on MusicBrainz's official genre list (`GET /ws/2/genre/all?fmt=txt`, fetched once) with positive votes and at least a fifth of the top tag's votes, up to 5 per artist.
+1. Artists Wikidata linked to MusicBrainz need no matching: one artist search reads the tags of up to 100 of them (`GET /ws/2/artist?query=arid:… OR arid:…`).
+2. For the others, one URL search finds MusicBrainz' links to 50 artists' Spotify pages (`GET /ws/2/url?query=url:"https://open.spotify.com/artist/…" OR …`). An artist matches when exactly one MusicBrainz artist links to their page.
+3. Still unmatched artists: one recording search for 25 artists' ISRCs (`GET /ws/2/recording?query=isrc:… OR isrc:…`). An artist matches when the recordings with their track's ISRC credit exactly one MusicBrainz artist with the same name (ignoring case, accents and punctuation).
+4. Last, for artists with at least 2 liked songs, one exact-name artist search each (`GET /ws/2/artist?query=artist:"…"`). Exactly one artist with that name matches; several (e.g. two bands called Nirvana) are skipped as ambiguous. Artists with a single liked song are not searched by name: that would cost over a second per song for at most one song's genres, and in live runs it found genres for well under 1% of songs.
 
-Requests start at least 1.1 s apart and slow to 2 s after a 503 (MusicBrainz's rate-limit answer). The page sends `User-Agent: spotify-curator/0.2.0 ( https://github.com/bxant/spotify-curator )`; browsers that refuse to set that header send their own. Results are cached per artist in `localStorage`, so later lookups only cover newly liked artists. MusicBrainz genres are merged with Spotify's, lowercased, into the same genre playlists and filters.
+Matched artists' tags are read 100 at a time as above. Genres are tags on MusicBrainz's official genre list (`GET /ws/2/genre/all?fmt=txt`, fetched once) with positive votes and at least a fifth of the top tag's votes, up to 5 per artist. Requests start at least 1.1 s apart (two may be open at once, since MusicBrainz answers can take longer than that), slow to 2 s after a 503 (MusicBrainz's rate-limit answer), and return to 1.1 s after 30 answered requests in a row. The page sends `User-Agent: spotify-curator/0.2.0 ( https://github.com/bxant/spotify-curator )`; browsers that refuse to set that header send their own. Spotify, Wikidata and MusicBrainz genres are merged, lowercased, into the same genre playlists and filters.
