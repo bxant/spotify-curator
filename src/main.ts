@@ -15,17 +15,16 @@ import {
   type CurationResult,
 } from './curate';
 import {
-  artistsToMatch,
-  cachedMusicBrainz,
-  loadGenres,
-  loadKeys,
-  loadLibrary,
-  loadMusicBrainz,
-  musicBrainzGenres,
-  saveKeys,
-  type LibrarySnapshot,
-} from './library';
-import { MusicBrainzClient, type ArtistGenreMatch } from './musicbrainz';
+  cachedEnrichment,
+  enrichmentProgress,
+  openGenres,
+  runEnrichment,
+  type EnrichmentData,
+  type EnrichmentProgress,
+  type EnrichmentStatus,
+} from './enrich';
+import { loadLibrary, type LibrarySnapshot } from './library';
+import { MusicBrainzClient } from './musicbrainz';
 import { mapWithConcurrency } from './http';
 import { ReccoBeatsClient } from './reccobeats';
 import { homeHref, parseRoute, playlistHref, type Route } from './route';
@@ -35,13 +34,16 @@ import { RemovedStore } from './removed-store';
 import { APP_TAG, matchSaved, playlistDescription, setAsideSaved, type SavedMatch } from './saved';
 import { SpotifyClient, type CreatedPlaylist } from './spotify';
 import type { CuratedPlaylist, LikedTrack, PlaylistKind, SavedPlaylist, SavedTracks, TrackKey } from './types';
+import { WikidataClient } from './wikidata';
 
 const app = document.getElementById('app') as HTMLElement;
 const cache = new SessionCache();
-/** MusicBrainz matches outlive the tab: they are public data and slow to look up again. */
+/** Key and genre lookups outlive the tab: they are public data and slow to look up again. */
 const lookupCache = browserCache();
-/** One client for every lookup, so its throttle (and any 503 slowdown) carries across runs. */
+/** One client per service for every lookup, so throttles (and any 503 slowdown) carry across runs. */
 const musicBrainz = new MusicBrainzClient();
+const wikidata = new WikidataClient();
+const reccoBeats = new ReccoBeatsClient();
 /** Redraws the create controls of the card currently on the page for a playlist key. */
 const createControlRefreshers = new Map<string, () => void>();
 const createdStore = new CreatedStore(cache, (key) => {
@@ -55,8 +57,10 @@ const removedStore = new RemovedStore(cache);
 const PREVIEW_COUNT = 5;
 /** Saved playlists whose tracks are read at once when checking suggestions against them. */
 const SAVED_TRACKS_CONCURRENCY = 3;
-/** Rough MusicBrainz pace for the estimate shown before a lookup (batched searches plus name fallbacks). */
-const MB_SECONDS_PER_ARTIST = 0.45;
+/** While keys and genres arrive, the suggestions are re-curated at most this often. */
+const RECURATE_MS = 3000;
+/** The background status updates its count at most this often. */
+const STATUS_MS = 400;
 const THEME_KEY = 'curator.theme';
 /** Bumped on every (re)load so enrichment from an older load cannot re-render the page. */
 let generation = 0;
@@ -64,6 +68,7 @@ let generation = 0;
 let lookups = new AbortController();
 
 function nextGeneration(): number {
+  hideStatusDock();
   lookups.abort();
   lookups = new AbortController();
   activeView = undefined;
@@ -146,6 +151,7 @@ const ICONS = {
   moon: 'M12.3 22a10 10 0 0 1-2.9-19.57A8 8 0 0 0 21.57 14.6 10 10 0 0 1 12.3 22Z',
   back: 'M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2Z',
   filter: 'M10 18h4v-2h-4v2ZM3 6v2h18V6H3Zm3 7h12v-2H6v2Z',
+  bars: 'M10 20h4V4h-4v16Zm-6 0h4v-8H4v8Zm12-11v11h4V9h-4Z',
   close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41Z',
 } as const;
 
@@ -303,28 +309,30 @@ function showSignIn(auth: SpotifyAuth, error?: string) {
         'Read-only access to your library, top items, recent plays and playlists, plus permission to create private playlists. ' +
           'Nothing is stored outside this browser.',
       ),
+      h(
+        'p',
+        { class: 'muted small' },
+        'Once your library is loaded, the page looks up musical keys and genres from free outside services ' +
+          '(ReccoBeats, Wikidata and MusicBrainz), because Spotify no longer offers them to apps like this one. ' +
+          'They receive only Spotify track and artist IDs, artist names and recording codes, never your account.',
+      ),
     ),
   );
 }
 
-interface LookupRun {
-  running: boolean;
-  done: number;
-  total: number;
-  etaSeconds?: number;
-  error?: string;
-  stop?: () => void;
-}
-
 interface CuratorState {
   library: LibrarySnapshot;
-  genres: Record<string, string[]>;
-  keys: Record<string, TrackKey | null>;
-  musicBrainz: Record<string, ArtistGenreMatch>;
-  notes: string[];
-  genreProgress: string;
-  keyRun: LookupRun;
-  mbRun: LookupRun;
+  /** Keys and genres found so far; filled in place by the background lookups. */
+  enrich: EnrichmentData;
+  /**
+   * The keys the suggestions are curated with: those known when the page loaded, then all
+   * of them once a key lookup ends. Keys arrive in no useful order, so curating with part of
+   * them would keep swapping which key playlists are shown.
+   */
+  curatedKeys: Record<string, TrackKey | null>;
+  status: EnrichmentStatus;
+  /** Stops the running background lookups; unset when none run. */
+  stop?: () => void;
   /** 0 is the default set; each "Curate a different set" moves to the next one. */
   variant: number;
   /** Suggestions the owner kept when curating a different set, exactly as they were. */
@@ -363,7 +371,7 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
 
   let library: LibrarySnapshot;
   try {
-    library = await loadLibrary(client, cache, (message) => (status.textContent = message), forceReload);
+    library = await loadLibrary(client, cache, (message) => (status.textContent = message), forceReload, lookupCache);
   } catch (err) {
     if (current !== generation) return;
     if (err instanceof AuthError) {
@@ -390,15 +398,13 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
   // Refresh data goes back to the default set.
   if (forceReload) cache.set(SET_KEY, null);
   const set = cache.get<SavedSet>(SET_KEY);
+  const enrich = cachedEnrichment(lookupCache);
   const state: CuratorState = {
     library,
-    genres: cache.get<Record<string, string[]>>('genres') ?? {},
-    keys: cache.get<Record<string, TrackKey | null>>('keys') ?? {},
-    musicBrainz: cachedMusicBrainz(lookupCache),
-    notes: [],
-    genreProgress: '',
-    keyRun: { running: false, done: 0, total: 0 },
-    mbRun: { running: false, done: 0, total: 0 },
+    enrich,
+    curatedKeys: enrich.keys,
+    // Lookups start right after the first render, so it must not claim there are no keys or genres.
+    status: { keys: { state: 'running', errors: [] }, genres: { state: 'running', errors: [] } },
     variant: set?.variant ?? 0,
     kept: set?.kept ?? [],
     criteria: route.name === 'home' ? { ...route.criteria } : { ...DEFAULT_CRITERIA },
@@ -406,87 +412,29 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
     showSaved: false,
   };
 
-  /** A signal that aborts on a new page load or when the owner clicks Stop. */
-  const stoppable = (run: LookupRun) => {
-    const own = new AbortController();
-    run.stop = () => own.abort();
-    return { signal: AbortSignal.any([signal, own.signal]), own: own.signal };
-  };
-
-  // Key lookups send track IDs to ReccoBeats, so they only start when the owner asks.
-  const findKeys = () => {
-    const run = state.keyRun;
-    const { signal: runSignal, own } = stoppable(run);
-    Object.assign(run, { running: true, done: 0, total: 0, error: undefined });
-    view.render();
-    void loadKeys(
-      new ReccoBeatsClient(),
-      library.liked,
-      cache,
-      (done, total) => {
-        Object.assign(run, { done, total });
-        view.renderProgress();
-      },
-      runSignal,
-    ).then((result) => {
+  // Keys and genres start on their own: playlists that need neither are already on the
+  // page, and key and genre playlists fill in as results arrive.
+  const findKeysAndGenres = () => {
+    if (state.stop) return;
+    const stop = new AbortController();
+    state.stop = () => stop.abort();
+    state.status = { keys: { state: 'running', errors: [] }, genres: { state: 'running', errors: [] } };
+    const clients = { spotify: client, reccoBeats, wikidata, musicBrainz };
+    void runEnrichment(library.liked, lookupCache, clients, state.enrich, state.status, view.changed, {
+      teardown: signal,
+      stop: stop.signal,
+    }).then(() => {
       if (signal.aborted) return;
-      state.keys = result.data;
-      // Stopped by the owner: keep what loaded, as a later click continues from there.
-      const error = own.aborted ? undefined : result.error;
-      if (own.aborted) saveKeys(cache, result.data);
-      Object.assign(run, { running: false, stop: undefined, error });
-      if (error) state.notes.push(`Musical key lookup stopped early (${error}); key playlists use what loaded.`);
-      view.render();
+      state.stop = undefined;
+      view.changed();
     });
+    view.changed();
   };
 
-  // MusicBrainz lookups send artist names and ISRCs, so they also wait for the owner.
-  const findGenres = () => {
-    const run = state.mbRun;
-    const { signal: runSignal } = stoppable(run);
-    Object.assign(run, { running: true, done: 0, total: artistsToMatch(library.liked, state.musicBrainz).length, error: undefined });
-    run.etaSeconds = Math.round(run.total * MB_SECONDS_PER_ARTIST);
-    view.render();
-    void loadMusicBrainz(
-      musicBrainz,
-      library.liked,
-      lookupCache,
-      (progress, data) => {
-        Object.assign(run, progress);
-        state.musicBrainz = data;
-        // New genres change the suggestions; refresh them in place as each batch lands.
-        view.update();
-      },
-      runSignal,
-    ).then((result) => {
-      if (signal.aborted) return;
-      state.musicBrainz = result.data;
-      Object.assign(run, { running: false, stop: undefined, error: result.error });
-      if (result.error) state.notes.push(`MusicBrainz genre lookup stopped early (${result.error}); genre playlists use what loaded.`);
-      view.render();
-    });
-  };
-
-  const view = createCuratorView(auth, client, state, () => current === generation, { findKeys, findGenres });
+  const view = createCuratorView(auth, client, state, () => current === generation, { findKeysAndGenres });
   activeView = view;
   view.render();
-
-  // Re-curate when genres finish so genre playlists appear.
-  const result = await loadGenres(
-    client,
-    library.liked,
-    cache,
-    (done, total) => {
-      state.genreProgress = `Reading Spotify artist genres… ${done.toLocaleString()} / ${total.toLocaleString()}`;
-      view.renderProgress();
-    },
-    signal,
-  );
-  if (signal.aborted) return;
-  state.genres = result.data;
-  state.genreProgress = '';
-  if (result.error) state.notes.push(`Artist genre lookup stopped early (${result.error}); genre playlists use what loaded.`);
-  view.render();
+  findKeysAndGenres();
 }
 
 /** Reads the user's own playlists; never changes them. Failing here only disables the check. */
@@ -511,8 +459,8 @@ function savedPlaylists(state: CuratorState): SavedPlaylist[] {
 }
 
 interface Actions {
-  findKeys: () => void;
-  findGenres: () => void;
+  /** Starts (or resumes) the background key and genre lookups; does nothing while they run. */
+  findKeysAndGenres: () => void;
 }
 
 function createCuratorView(
@@ -522,36 +470,16 @@ function createCuratorView(
   isCurrent: () => boolean,
   actions: Actions,
 ) {
-  /** Live parts of the enrichment cards, updated in place so buttons keep working mid-lookup. */
-  const live = {
-    spotifyGenres: h('p', { class: 'muted small live' }),
-    keyBar: h('progress', { max: '1', value: '0' }) as HTMLProgressElement,
-    keyText: h('span', {}),
-    mbBar: h('progress', { max: '1', value: '0' }) as HTMLProgressElement,
-    mbText: h('span', {}),
-  };
-
-  const renderProgress = () => {
-    if (!isCurrent()) return;
-    live.spotifyGenres.textContent = state.genreProgress;
-    live.spotifyGenres.hidden = !state.genreProgress;
-    setBar(live.keyBar, state.keyRun);
-    live.keyText.textContent = state.keyRun.total
-      ? `${state.keyRun.done.toLocaleString()} / ${state.keyRun.total.toLocaleString()} songs`
-      : 'Starting…';
-    setBar(live.mbBar, state.mbRun);
-    live.mbText.textContent =
-      `${state.mbRun.done.toLocaleString()} / ${state.mbRun.total.toLocaleString()} artists` +
-      (state.mbRun.etaSeconds ? ` · about ${duration(state.mbRun.etaSeconds)} left` : '');
-  };
+  const dock = statusDock(actions);
 
   const curateNow = () => {
-    const mbGenres = musicBrainzGenres(state.musicBrainz);
+    const { enrich, curatedKeys } = state;
+    const open = openGenres(enrich);
     const options = {
       now: new Date(),
-      artistGenres: state.genres,
-      musicBrainzGenres: mbGenres,
-      trackKeys: state.keys,
+      artistGenres: enrich.spotify,
+      openGenres: open,
+      trackKeys: curatedKeys,
       variant: state.variant,
     };
     let result = curate(state.library.liked, state.library.history, options);
@@ -579,8 +507,8 @@ function createCuratorView(
     const curated = [...fresh, ...saved.map((s) => s.playlist)];
     /** As shown and created: without the tracks the owner removed. */
     const shown = fresh.map((p) => removedStore.apply(p));
-    const artistGenres = mergeGenres(state.genres, mbGenres);
-    const facetInputs = { artistGenres, trackKeys: state.keys };
+    const artistGenres = mergeGenres(enrich.spotify, open);
+    const facetInputs = { artistGenres, trackKeys: curatedKeys };
     const browsable = (playlist: CuratedPlaylist): Browsable => ({ playlist, facets: playlistFacets(playlist, facetInputs) });
     return {
       result,
@@ -614,7 +542,7 @@ function createCuratorView(
       ),
     ).then(() => {
       for (const id of ids) tracksInFlight.delete(id);
-      update();
+      if (isCurrent()) refresh();
     });
   };
 
@@ -633,28 +561,56 @@ function createCuratorView(
     const grid = h('div', { class: 'grid' });
     const count = h('p', { class: 'recs-count', role: 'status' });
     const savedLine = h('p', { class: 'muted small saved-line' });
-    const renderGrid = () => {
+    /**
+     * Cards by playlist key. A card is reused while it shows the same thing, so updates as
+     * keys and genres arrive only add, replace or move the cards that changed, and the
+     * browser keeps the cards in view where they are.
+     */
+    let cards = new Map<string, { sig: string; el: HTMLElement }>();
+    const renderGrid = (background = false) => {
       const { keptKeys, savedMatches } = cur;
       const all = items();
       const visible = browse(all, state.criteria);
+      renderSavedLine();
+      const wanted = visible.map(({ playlist, facets }) => {
+        const kept = keptKeys.has(playlist.key);
+        const saved = savedMatches.get(playlist.key);
+        return { playlist, facets, kept, saved, sig: cardSignature(playlist, facets, kept, saved) };
+      });
+      // Leave the cards alone while the focused one would change; the next update catches up.
+      const focused = grid.contains(document.activeElement) ? document.activeElement?.closest<HTMLElement>('.card') : null;
+      if (focused && !wanted.some((w) => cards.get(w.playlist.key)?.el === focused && cards.get(w.playlist.key)?.sig === w.sig)) return;
+
       count.textContent =
         visible.length === all.length ? `All ${all.length} playlists` : `${visible.length} of ${all.length} playlists`;
-      renderSavedLine();
-      grid.replaceChildren(
-        ...(visible.length > 0
-          ? visible.map(({ playlist, facets }) => playlistCard(client, playlist, facets, keptKeys.has(playlist.key), savedMatches.get(playlist.key)))
-          : all.length === 0
-            ? [
-                h(
-                  'p',
-                  { class: 'muted empty' },
-                  cur.savedItems.length > 0
-                    ? 'Every recommendation is already in your Spotify.'
-                    : 'Not enough liked songs or listening history to suggest playlists yet.',
-                ),
-              ]
-            : [h('div', { class: 'muted empty' }, h('p', {}, 'None of your recommendations match these filters.'), button('Clear filters', { class: 'ghost small' }, bar.clear))]),
-      );
+      if (visible.length === 0) {
+        cards = new Map();
+        grid.replaceChildren(
+          all.length === 0
+            ? h(
+                'p',
+                { class: 'muted empty' },
+                cur.savedItems.length > 0
+                  ? 'Every recommendation is already in your Spotify.'
+                  : 'Not enough liked songs or listening history to suggest playlists yet.',
+              )
+            : h('div', { class: 'muted empty' }, h('p', {}, 'None of your recommendations match these filters.'), button('Clear filters', { class: 'ghost small' }, bar.clear)),
+        );
+        return;
+      }
+      const next = new Map<string, { sig: string; el: HTMLElement }>();
+      for (const { playlist, facets, kept, saved, sig } of wanted) {
+        const old = cards.get(playlist.key);
+        const el = old?.sig === sig ? old.el : playlistCard(client, playlist, facets, kept, saved);
+        // Playlists that appear while the page is open (e.g. once keys arrive) fade in, once.
+        if (!old && background && cards.size > 0) {
+          el.classList.add('fresh');
+          el.addEventListener('animationend', () => el.classList.remove('fresh'), { once: true });
+        }
+        next.set(playlist.key, { sig, el });
+      }
+      cards = next;
+      placeChildren(grid, [...next.values()].map((c) => c.el));
     };
     const onCriteria = () => {
       syncHomeUrl();
@@ -692,7 +648,6 @@ function createCuratorView(
       savedLine.hidden = parts.length === 0;
     };
 
-    renderProgress();
     const recurate =
       cur.shown.length > 0 &&
       button([icon('shuffle'), 'Curate a different set'], { class: 'secondary' }, () => {
@@ -708,7 +663,7 @@ function createCuratorView(
       topBar(auth),
       heroEl,
       createdList(),
-      curationSection(state, cur.result, live, actions, recurate),
+      curationSection(recurate),
       h(
         'section',
         { class: 'recs', 'aria-labelledby': 'recs-title' },
@@ -733,14 +688,14 @@ function createCuratorView(
 
     refresh = () => {
       cur = curateNow();
-      const next = hero(state, cur.result);
-      heroEl.replaceWith(next);
-      heroEl = next;
+      if (!heroEl.contains(document.activeElement)) {
+        const next = hero(state, cur.result);
+        heroEl.replaceWith(next);
+        heroEl = next;
+      }
       bar.setItems(items());
       syncHomeUrl();
-      // Leave the cards alone while one has focus; the next refresh or render catches up.
-      if (!grid.contains(document.activeElement)) renderGrid();
-      else renderSavedLine();
+      renderGrid(true);
       fetchNeededTracks(cur);
     };
   };
@@ -755,6 +710,8 @@ function createCuratorView(
       return { cur, item, saved, signature: item ? `${trackSignature(item.playlist)}|${saved?.playlist.id ?? ''}` : '' };
     };
     let shown = find();
+    /** Offers the playlist as newly curated, instead of changing its tracks under the reader. */
+    const notice = h('div', { class: 'update-notice', role: 'status', hidden: '' });
     const back = () => backToRecommendations(state.criteria);
     const edit = (change: () => void, focus: () => HTMLElement | null | undefined) => {
       change();
@@ -793,13 +750,15 @@ function createCuratorView(
         .removed(key)
         .map((id) => byId.get(id))
         .filter((t): t is LikedTrack => !!t);
+      notice.hidden = true;
       show(
         topBar(auth),
+        notice,
         item
           ? playlistPage(
               client,
               item,
-              { artistGenres: cur.artistGenres, trackKeys: state.keys, kept: cur.keptKeys.has(key), saved },
+              { artistGenres: cur.artistGenres, trackKeys: state.enrich.keys, kept: cur.keptKeys.has(key), saved },
               { removed, ...editing },
               back,
             )
@@ -811,10 +770,29 @@ function createCuratorView(
 
     refresh = () => {
       const next = find();
-      const changed = next.signature !== shown.signature;
-      shown = next;
-      // Redraw only when the tracks or saved match changed (e.g. genres landed), and not under a focused control.
-      if (changed && !document.activeElement?.matches('#app :is(a, button)')) draw();
+      if (next.signature === shown.signature) {
+        shown = next;
+        notice.hidden = true;
+        return;
+      }
+      // A playlist that was missing just appears (unless a control has focus); one on the
+      // page keeps its tracks (and saved match) until the owner asks for the update.
+      if (!shown.item) {
+        if (!document.activeElement?.matches('#app :is(a, button)')) {
+          shown = next;
+          draw();
+        }
+        return;
+      }
+      notice.replaceChildren(
+        h('span', {}, next.item ? 'Newly found keys and genres changed this playlist.' : 'Newly found keys and genres replaced this playlist.'),
+        button('Show the update', { class: 'ghost small' }, () => {
+          shown = find();
+          draw();
+          app.querySelector<HTMLElement>('.playlist-page h1')?.focus();
+        }),
+      );
+      notice.hidden = false;
     };
   };
 
@@ -824,11 +802,44 @@ function createCuratorView(
     else renderHome();
   };
 
-  /** Mid-lookup redraw: progress and suggestions only, so open selects and focus survive. */
-  const update = () => {
+  /**
+   * Called on every bit of background progress. The status dock catches up every
+   * STATUS_MS, and the suggestions are re-curated at most every RECURATE_MS (when the
+   * browser is idle), or right away when a lookup finishes or stops.
+   */
+  let lanes = '';
+  let statusTimer: ReturnType<typeof setTimeout> | undefined;
+  let curateTimer: ReturnType<typeof setTimeout> | undefined;
+  let curatedAt = 0;
+  const showStatus = () => {
+    statusTimer = undefined;
+    if (isCurrent()) dock.update(state, enrichmentProgress(state.library.liked, state.enrich, state.status));
+  };
+  const recurate = () => {
+    curateTimer = undefined;
+    whenIdle(() => {
+      if (!isCurrent()) return;
+      curatedAt = performance.now();
+      refresh();
+    });
+  };
+  const changed = () => {
     if (!isCurrent()) return;
-    renderProgress();
-    refresh();
+    if (state.status.keys.state !== 'running') state.curatedKeys = state.enrich.keys;
+    const now = `${state.status.keys.state} ${state.status.genres.state}`;
+    const settled = now !== lanes;
+    lanes = now;
+    if (settled) {
+      clearTimeout(statusTimer);
+      clearTimeout(curateTimer);
+      curateTimer = undefined;
+      showStatus();
+      // Starting needs no new suggestions; a lookup that finished or stopped does.
+      if (now !== 'running running') recurate();
+      return;
+    }
+    statusTimer ??= setTimeout(showStatus, STATUS_MS);
+    curateTimer ??= setTimeout(recurate, Math.max(0, curatedAt + RECURATE_MS - performance.now()));
   };
 
   /** Draws the page for a new route, restoring the recommendations as the owner left them. */
@@ -849,27 +860,18 @@ function createCuratorView(
     app.querySelector<HTMLElement>('.playlist-page h1')?.focus({ preventScroll: true });
   };
 
-  return { render, renderProgress, update, navigate };
+  return { render, changed, navigate };
 }
 
-function setBar(bar: HTMLProgressElement, run: LookupRun) {
-  if (run.total > 0) {
-    bar.max = run.total;
-    bar.value = run.done;
-  } else {
-    bar.removeAttribute('value'); // indeterminate
-  }
-}
-
-function duration(seconds: number): string {
-  if (seconds < 90) return `${Math.max(1, Math.round(seconds / 10) * 10)} s`;
-  const minutes = Math.round(seconds / 60);
-  return minutes < 90 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+/** Runs `fn` when the browser is idle (or within a second), off the path of input and scrolling. */
+function whenIdle(fn: () => void) {
+  if ('requestIdleCallback' in window) requestIdleCallback(() => fn(), { timeout: 1000 });
+  else setTimeout(fn, 0);
 }
 
 function topBar(auth: SpotifyAuth): HTMLElement {
-  // Refetches likes and listening history; genre and key lookups stay cached and
-  // only newly liked tracks' artists (and, on request, keys) are looked up.
+  // Refetches likes and listening history; key and genre lookups stay cached and
+  // only newly liked songs and artists are looked up.
   const refresh = button('Refresh data', { class: 'ghost', title: 'Refetch Liked Songs and listening history' }, () => {
     createdStore.reset();
     void showCurator(auth, true);
@@ -893,17 +895,12 @@ function hero(state: CuratorState, result: CurationResult): HTMLElement {
   const s = result.stats;
   const stat = (value: number, label: string) => h('li', {}, h('strong', {}, value.toLocaleString()), label);
 
-  const notes = [...state.notes];
-  const mbDone = !state.mbRun.running && artistsToMatch(state.library.liked, state.musicBrainz).length === 0;
-  if (!state.genreProgress && !state.mbRun.running && s.likedCount > 0 && s.tracksWithGenres === 0) {
-    notes.push(
-      mbDone
-        ? 'Neither Spotify nor MusicBrainz had genres for your artists, so there are no genre playlists.'
-        : 'Spotify returned no artist genres (the field is deprecated for new apps). Find more genres from MusicBrainz below to get genre playlists.',
-    );
+  const notes: string[] = [];
+  const { keys, genres } = state.status;
+  if (genres.state === 'done' && genres.errors.length === 0 && s.likedCount > 0 && s.tracksWithGenres === 0) {
+    notes.push('Neither Spotify, Wikidata nor MusicBrainz had genres for your artists, so there are no genre playlists.');
   }
-  const keysMissing = state.library.liked.some((t) => !(t.id in state.keys));
-  if (!state.keyRun.running && !keysMissing && s.likedCount > 0 && s.tracksWithKey === 0) {
+  if (keys.state === 'done' && keys.errors.length === 0 && s.likedCount > 0 && s.tracksWithKey === 0) {
     notes.push('No musical keys were available from ReccoBeats, so there are no key playlists.');
   }
 
@@ -962,62 +959,9 @@ function createdList(): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// Curation: what changes the recommendations themselves — a different set, and
-// the two opt-in lookups that send data to outside services.
+// Curation: a different set, and where the data behind the suggestions comes from.
 
-function curationSection(
-  state: CuratorState,
-  result: CurationResult,
-  live: { spotifyGenres: HTMLElement; keyBar: HTMLProgressElement; keyText: HTMLElement; mbBar: HTMLProgressElement; mbText: HTMLElement },
-  actions: Actions,
-  recurate: HTMLElement | false,
-): HTMLElement {
-  const liked = state.library.liked;
-  const s = result.stats;
-
-  // Musical keys (ReccoBeats)
-  const keysKnown = liked.filter((t) => t.id in state.keys).length;
-  const keysMissing = liked.length - keysKnown;
-  const keyRun = state.keyRun;
-  let keyState: HTMLElement;
-  if (keyRun.running) {
-    keyState = runningState(live.keyBar, live.keyText, keyRun);
-  } else if (keysMissing === 0 && liked.length > 0) {
-    keyState = doneState(`Keys found for ${s.tracksWithKey.toLocaleString()} of ${liked.length.toLocaleString()} songs.`);
-  } else {
-    const label = keysKnown > 0 ? `Find keys for ${keysMissing.toLocaleString()} more songs` : 'Find musical keys';
-    keyState = h(
-      'div',
-      { class: 'enrich-state' },
-      button(label, { class: 'primary' }, actions.findKeys),
-      h('span', { class: 'muted small' }, keysKnown > 0 ? `${s.tracksWithKey.toLocaleString()} songs have a key so far.` : `${liked.length.toLocaleString()} songs to look up.`),
-    );
-  }
-
-  // Genres (MusicBrainz)
-  const mbRun = state.mbRun;
-  const artistsLeft = artistsToMatch(liked, state.musicBrainz).length;
-  const libraryArtists = new Set(liked.flatMap((t) => t.artists.map((a) => a.id)));
-  const matches = [...libraryArtists].map((id) => state.musicBrainz[id]).filter((m): m is ArtistGenreMatch => !!m);
-  const matched = matches.filter((m) => m.mbid).length;
-  const withGenres = matches.filter((m) => m.genres.length > 0).length;
-  let mbState: HTMLElement;
-  if (mbRun.running) {
-    mbState = runningState(live.mbBar, live.mbText, mbRun);
-  } else if (artistsLeft === 0 && libraryArtists.size > 0) {
-    mbState = doneState(
-      `Matched ${matched.toLocaleString()} of ${libraryArtists.size.toLocaleString()} artists; ${withGenres.toLocaleString()} have genres.`,
-    );
-  } else {
-    const label = matches.length > 0 ? `Continue: ${artistsLeft.toLocaleString()} artists left` : 'Find more genres';
-    mbState = h(
-      'div',
-      { class: 'enrich-state' },
-      button(label, { class: 'primary' }, actions.findGenres),
-      h('span', { class: 'muted small' }, `${artistsLeft.toLocaleString()} artists, about ${duration(artistsLeft * MB_SECONDS_PER_ARTIST)}.`),
-    );
-  }
-
+function curationSection(recurate: HTMLElement | false): HTMLElement {
   return h(
     'section',
     { class: 'curation', 'aria-labelledby': 'curation-title' },
@@ -1032,75 +976,213 @@ function curationSection(
         h(
           'p',
           { class: 'muted' },
-          'Playlists are picked from your Liked Songs and listening history. Curate a different set for new picks, or add musical keys and genres for more kinds of playlists.',
+          'Playlists are picked from your Liked Songs and listening history, with musical keys and genres looked up in the background. ' +
+            'Curate a different set for new picks.',
         ),
       ),
       recurate,
     ),
-    h('h3', { class: 'enrich-title' }, 'Make the suggestions smarter'),
+    h('h3', { class: 'sources-title', id: 'data-sources' }, 'Data sources'),
+    dataSources(),
+  );
+}
+
+interface DataSource {
+  icon: keyof typeof ICONS;
+  name: string;
+  url: string;
+  gives: string;
+  receives: string;
+}
+
+const DATA_SOURCES: DataSource[] = [
+  {
+    icon: 'note',
+    name: 'Spotify',
+    url: 'https://developer.spotify.com/documentation/web-api',
+    gives: 'Your profile, Liked Songs, top items and recent plays, any artist genres it still has, and the playlists you create.',
+    receives: 'Your sign-in, and the playlists you choose to create.',
+  },
+  {
+    icon: 'bars',
+    name: 'ReccoBeats',
+    url: 'https://reccobeats.com',
+    gives: 'Musical keys, for key playlists and key filters.',
+    receives: 'The Spotify track IDs of your liked songs.',
+  },
+  {
+    icon: 'tag',
+    name: 'Wikidata',
+    url: 'https://www.wikidata.org',
+    gives: 'Artist genres, and the MusicBrainz ID of each artist it knows. Hundreds of artists per request, so it goes first.',
+    receives: 'Spotify artist IDs.',
+  },
+  {
+    icon: 'tag',
+    name: 'MusicBrainz',
+    url: 'https://musicbrainz.org',
+    gives: 'Genres for artists Wikidata has none for, at the one request a second it asks for.',
+    receives: 'Spotify artist IDs, artist names, MusicBrainz artist IDs, and the ISRC recording codes of liked songs.',
+  },
+];
+
+/** Who the page talks to, what each one gets, and why outside services are involved at all. */
+function dataSources(): HTMLElement {
+  return h(
+    'div',
+    { class: 'sources' },
     h(
       'p',
-      { class: 'muted enrich-intro' },
-      'Spotify no longer gives new apps musical keys and has deprecated artist genres. These optional lookups fill the gaps from free outside services. ',
-      'Nothing is sent to them until you click.',
+      { class: 'muted' },
+      'Spotify has closed musical keys (audio features) to new developer apps and deprecated artist genres, so this page fills those gaps ' +
+        'from free, open services that need no account or API key. They never receive your Spotify account, sign-in or listening history. ' +
+        'Results are kept in this browser, so later visits only look up new songs and artists; Sign out clears them.',
     ),
     h(
-      'div',
-      { class: 'enrich-grid' },
-      enrichCard({
-        icon: 'note',
-        title: 'Musical keys',
-        service: 'ReccoBeats',
-        what: 'Adds key playlists (with Camelot codes for harmonic mixing) and lets you sort and filter by key.',
-        sends: 'Sends the Spotify track IDs of your liked songs to ReccoBeats (reccobeats.com), and nothing else.',
-        state: keyState,
-      }),
-      enrichCard({
-        icon: 'tag',
-        title: 'More genres',
-        service: 'MusicBrainz',
-        what: 'Cross-references your artists on MusicBrainz, the open music encyclopedia, for genre playlists and genre filters. Matches by ISRC or exact name and skips anything ambiguous.',
-        sends:
-          'Sends artist names and the ISRC recording codes of liked songs to MusicBrainz (musicbrainz.org), one request a second as it asks. Results are kept in this browser until you sign out.',
-        state: mbState,
-        extra: live.spotifyGenres,
-      }),
+      'ul',
+      { class: 'source-list' },
+      ...DATA_SOURCES.map((d) =>
+        h(
+          'li',
+          {},
+          h('span', { class: 'source-icon', 'aria-hidden': 'true' }, icon(d.icon)),
+          h(
+            'div',
+            {},
+            h('a', { href: d.url, target: '_blank', rel: 'noopener' }, d.name),
+            h('p', { class: 'small' }, d.gives),
+            h('p', { class: 'small muted' }, h('strong', {}, 'Receives: '), d.receives),
+          ),
+        ),
+      ),
     ),
   );
 }
 
-function enrichCard(c: {
-  icon: keyof typeof ICONS;
-  title: string;
-  service: string;
-  what: string;
-  sends: string;
-  state: HTMLElement;
-  extra?: HTMLElement;
-}): HTMLElement {
-  return h(
-    'article',
-    { class: 'enrich-card' },
-    h(
-      'div',
-      { class: 'enrich-head' },
-      h('span', { class: 'enrich-icon', 'aria-hidden': 'true' }, icon(c.icon)),
-      h('div', {}, h('h4', {}, c.title), h('div', { class: 'muted small' }, `via ${c.service}`)),
-    ),
-    h('p', {}, c.what),
-    h('p', { class: 'sends small' }, h('strong', {}, 'What is shared: '), c.sends),
-    c.state,
-    c.extra,
+// ---------------------------------------------------------------------------
+// Background status: a small dock, on every page, that says the playlists shown are ready
+// while keys and genres are still being looked up, and how far that has got.
+
+interface Dock {
+  el: HTMLElement;
+  /** Announced to screen readers; changes only when the lookups start, finish or stop. */
+  live: HTMLElement;
+  toggle: HTMLButtonElement;
+  body: HTMLElement;
+  title: HTMLElement;
+  bar: HTMLProgressElement;
+  detail: HTMLElement;
+  action: HTMLElement;
+  mode?: string;
+}
+
+let dock: Dock | undefined;
+/** What the dock shows and acts on: the state and actions of the current page. */
+let dockState: { state: CuratorState; actions: Actions } | undefined;
+/** The dock is shrunk to its icon; remembered for the tab's session. */
+let dockCollapsed = false;
+
+function hideStatusDock() {
+  dock?.el.remove();
+  dock = undefined;
+  dockState = undefined;
+}
+
+function statusDock(actions: Actions) {
+  return {
+    update: (state: CuratorState, progress: EnrichmentProgress) => {
+      dockState = { state, actions };
+      drawStatusDock(progress);
+    },
+  };
+}
+
+function createDock(): Dock {
+  const toggle = button('', { class: 'dock-toggle' }, () => {
+    dockCollapsed = !dockCollapsed;
+    if (dock) dock.mode = undefined;
+    if (lastProgress) drawStatusDock(lastProgress);
+  });
+  const d: Dock = {
+    el: h('aside', { class: 'dock', 'aria-label': 'Background lookups' }),
+    live: h('p', { class: 'visually-hidden', role: 'status' }),
+    toggle,
+    body: h('div', { class: 'dock-body' }),
+    title: h('p', { class: 'dock-title' }),
+    bar: h('progress', { 'aria-label': 'Songs checked' }) as HTMLProgressElement,
+    detail: h('p', { class: 'dock-detail small muted' }),
+    action: h('span', { class: 'dock-action' }),
+  };
+  // Built once and left alone, so it stays open (and keeps focus) while the counts change.
+  const sources = h('details', { class: 'dock-sources' }, h('summary', {}, 'Data sources'), dataSources());
+  d.body.append(d.title, d.bar, d.detail, h('div', { class: 'dock-actions' }, d.action, sources));
+  d.el.append(toggle, d.live, d.body);
+  document.body.append(d.el);
+  return d;
+}
+
+let lastProgress: EnrichmentProgress | undefined;
+
+function drawStatusDock(progress: EnrichmentProgress) {
+  if (!dockState) return;
+  lastProgress = progress;
+  const { state } = dockState;
+  dock ??= createDock();
+  const d = dock;
+  const { keys, genres } = state.status;
+  const running = keys.state === 'running' || genres.state === 'running';
+  const stopped = !running && (keys.state === 'stopped' || genres.state === 'stopped');
+  const errors = [...keys.errors, ...genres.errors];
+  const n = (x: number) => x.toLocaleString();
+  const counts = `${n(progress.withKey)} with a key · ${n(progress.withGenres)} with genres`;
+
+  let mode: 'running' | 'stopped' | 'partial' | 'done';
+  let title: string;
+  let detail: string;
+  if (running) {
+    mode = 'running';
+    title = 'Your playlists are ready. Finding keys and genres in the background…';
+    detail = `${n(progress.settled)} of ${n(progress.songs)} songs`;
+  } else if (stopped) {
+    mode = 'stopped';
+    title = 'Stopped finding keys and genres. Playlists use what was found.';
+    detail = `${n(progress.settled)} of ${n(progress.songs)} songs checked · ${counts}`;
+  } else if (errors.length > 0) {
+    mode = 'partial';
+    title = 'Some lookups could not finish. Playlists use what was found.';
+    detail = `${errors.join(' · ')} · ${counts}`;
+  } else {
+    mode = 'done';
+    title = 'Keys and genres are up to date.';
+    detail = `${counts}, of ${n(progress.songs)} songs`;
+  }
+  const summary = running ? 'Finding keys and genres in the background' : title;
+
+  d.title.textContent = title;
+  d.detail.textContent = detail;
+  d.bar.hidden = !running;
+  d.bar.max = Math.max(1, progress.songs);
+  d.bar.value = progress.settled;
+  if (d.live.textContent !== summary) d.live.textContent = summary;
+  d.toggle.title = dockCollapsed ? `${summary} (show details)` : 'Hide';
+  d.toggle.setAttribute('aria-label', dockCollapsed ? `Show background lookups: ${summary}` : 'Hide background lookups');
+  d.toggle.setAttribute('aria-expanded', String(!dockCollapsed));
+  d.body.hidden = dockCollapsed;
+  if (d.mode === mode) return;
+
+  // Buttons are only rebuilt when the lookups change state, so focus stays on them meanwhile.
+  d.mode = mode;
+  d.el.className = `dock ${mode}${dockCollapsed ? ' collapsed' : ''}`;
+  d.toggle.replaceChildren(icon(mode === 'running' ? 'note' : mode === 'done' ? 'check' : 'tag'));
+  const hadFocus = d.action.contains(document.activeElement);
+  d.action.replaceChildren(
+    mode === 'running'
+      ? button('Stop', { class: 'ghost small' }, () => dockState?.state.stop?.())
+      : mode === 'done'
+        ? ''
+        : button(mode === 'stopped' ? 'Resume' : 'Try again', { class: 'ghost small' }, () => dockState?.actions.findKeysAndGenres()),
   );
-}
-
-function runningState(bar: HTMLProgressElement, text: HTMLElement, run: LookupRun): HTMLElement {
-  const stop = button('Stop', { class: 'ghost small' }, () => run.stop?.());
-  return h('div', { class: 'enrich-state running' }, h('div', { class: 'bar' }, bar), h('div', { class: 'bar-row' }, h('span', { class: 'muted small' }, text), stop));
-}
-
-function doneState(message: string): HTMLElement {
-  return h('div', { class: 'enrich-state done' }, h('span', { class: 'done-badge' }, icon('check'), 'Done'), h('span', { class: 'small' }, message));
+  if (hadFocus) (d.action.querySelector('button') ?? d.toggle).focus();
 }
 
 // ---------------------------------------------------------------------------
@@ -1215,7 +1297,7 @@ function browseBar(state: CuratorState, onChange: () => void): { el: HTMLElement
     field(
       'Key',
       select('key', () => options.keys.map((o) => ({ value: o.id, label: o.label + n(o.count) })), () => c.key ?? '', (v) => (c.key = v), 'Any key'),
-      () => (options.keys.length === 0 ? 'Find musical keys first' : undefined),
+      () => (options.keys.length > 0 ? undefined : state.stop ? 'Keys are still loading' : 'No keys yet'),
     ),
     field(
       'Artist',
@@ -1350,6 +1432,19 @@ function playlistCard(client: SpotifyClient, p: CuratedPlaylist, facets: Browsab
   );
 }
 
+/** What a card shows, so an unchanged card can stay on the page as it is. */
+function cardSignature(p: CuratedPlaylist, facets: Browsable['facets'], kept: boolean, saved: SavedMatch | undefined): string {
+  return JSON.stringify([trackSignature(p), p.name, p.reason, kept, saved?.playlist.id, facets.decade, facets.genres.slice(0, 3), facets.keys[0]?.id]);
+}
+
+/** Makes `els` the children of `parent` in order, leaving children already in place untouched. */
+function placeChildren(parent: HTMLElement, els: HTMLElement[]) {
+  els.forEach((el, i) => {
+    if (parent.children[i] !== el) parent.insertBefore(el, parent.children[i] ?? null);
+  });
+  while (parent.children.length > els.length) parent.lastElementChild?.remove();
+}
+
 function badges(p: CuratedPlaylist, kept: boolean, saved: boolean): HTMLElement {
   return h(
     'div',
@@ -1452,7 +1547,7 @@ function removedTracks(editing: TrackEditing & { removed: LikedTrack[] }): HTMLE
 }
 
 function missingPlaylistPage(state: CuratorState, onBack: () => void): HTMLElement {
-  const loading = !!state.genreProgress || state.mbRun.running || state.keyRun.running;
+  const loading = !!state.stop;
   return h(
     'section',
     { class: 'playlist-page' },

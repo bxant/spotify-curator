@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { artistsToLookUp, artistsToMatch, loadGenres, loadKeys, loadMusicBrainz, musicBrainzGenres } from '../src/library';
+import {
+  artistsToLookUp,
+  artistsToMatch,
+  loadGenreNames,
+  loadGenres,
+  loadKeys,
+  loadMusicBrainz,
+  loadWikidata,
+  musicBrainzGenres,
+} from '../src/library';
 import type { ArtistGenreMatch, MusicBrainzClient } from '../src/musicbrainz';
 import type { ReccoBeatsClient } from '../src/reccobeats';
 import { SessionCache } from '../src/session-cache';
 import { RateLimitError, SpotifyClient } from '../src/spotify';
 import { configuredClientId } from '../src/config';
+import type { WikidataArtist, WikidataClient } from '../src/wikidata';
 import { MemoryStorage, track } from './fixtures/builders';
 
 describe('artistsToLookUp', () => {
@@ -53,7 +63,7 @@ describe('loadKeys', () => {
     } as unknown as ReccoBeatsClient;
     const progress: number[] = [];
 
-    const result = await loadKeys(recco, liked, cache, (done) => progress.push(done));
+    const result = await loadKeys(recco, liked, cache, (keys) => progress.push(Object.keys(keys).length));
     late!();
     expect(result.error).toContain('HTTP 500');
     expect(result.data).toEqual({});
@@ -95,52 +105,89 @@ describe('artistsToMatch', () => {
       track({ id: '4', artist: 'noisrc' }),
       track({ id: '5', artist: 'done' }),
     ];
-    expect(artistsToMatch(liked, { done: {} })).toEqual([
-      { id: 'guest', name: 'GUEST', isrc: 'ISRC-OWN' },
-      { id: 'lead', name: 'LEAD', isrc: 'ISRC-FEAT' },
-      { id: 'noisrc', name: 'NOISRC' },
+    expect(artistsToMatch(liked, { done: { mbid: 'mb', via: 'name', genres: [] } })).toEqual([
+      { id: 'guest', name: 'GUEST', tracks: 2, isrc: 'ISRC-OWN' },
+      { id: 'lead', name: 'LEAD', tracks: 2, isrc: 'ISRC-FEAT' },
+      { id: 'noisrc', name: 'NOISRC', tracks: 1 },
     ]);
+  });
+
+  it('retries an artist found unmatched once they have more liked songs than at that lookup', () => {
+    const liked = [
+      { ...track({ id: '1', artist: 'grew' }), isrc: 'ISRC-NEW' },
+      { ...track({ id: '2', artist: 'grew' }), isrc: 'ISRC-OLD' },
+      track({ id: '3', artist: 'same' }),
+      track({ id: '4', artist: 'same' }),
+      track({ id: '5', artist: 'ambiguous' }),
+      track({ id: '6', artist: 'ambiguous' }),
+    ];
+    const known: Record<string, ArtistGenreMatch> = {
+      grew: { mbid: null, skipped: 'none', tracks: 1, genres: [] },
+      same: { mbid: null, skipped: 'none', tracks: 2, genres: [] },
+      ambiguous: { mbid: null, skipped: 'ambiguous', genres: [] },
+    };
+    expect(artistsToMatch(liked, known)).toEqual([{ id: 'grew', name: 'GREW', tracks: 2, isrc: 'ISRC-NEW' }]);
+  });
+});
+
+describe('loadGenreNames', () => {
+  it('fetches the genre list once per browser and tolerates MusicBrainz being down', async () => {
+    const cache = new SessionCache(new MemoryStorage());
+    let calls = 0;
+    const mb = {
+      async getGenreNames() {
+        calls++;
+        return ['folk'];
+      },
+    } as unknown as MusicBrainzClient;
+    expect(await loadGenreNames(mb, cache)).toEqual(['folk']);
+    expect(await loadGenreNames(mb, cache)).toEqual(['folk']);
+    expect(calls).toBe(1);
+
+    const down = {
+      async getGenreNames() {
+        throw new Error('MusicBrainz unreachable');
+      },
+    } as unknown as MusicBrainzClient;
+    expect(await loadGenreNames(down, new SessionCache(new MemoryStorage()))).toBeNull();
   });
 });
 
 describe('loadMusicBrainz', () => {
   const match = (genres: string[]): ArtistGenreMatch => ({ mbid: 'mb', via: 'name', genres });
-  const liked = [track({ id: '1', artist: 'x' }), track({ id: '2', artist: 'y' }), track({ id: '3', artist: 'cached' })];
+  const liked = [track({ id: '1', artist: 'x' }), track({ id: '2', artist: 'y' }), track({ id: '3', artist: 'cached' }), track({ id: '4', artist: 'covered' })];
 
-  it('looks up only new artists, fetches the genre list once, and caches each chunk', async () => {
+  it('looks up only new artists not covered elsewhere, with Wikidata\'s MusicBrainz IDs, and caches each chunk', async () => {
     const cache = new SessionCache(new MemoryStorage());
     cache.set('musicbrainz.artists', { cached: match(['jazz']) });
-    let genreListCalls = 0;
     const mb = {
-      async getGenreNames() {
-        genreListCalls++;
-        return ['folk'];
-      },
       async findArtistGenres(
-        artists: { id: string }[],
+        artists: { id: string; mbid?: string }[],
         genres: Set<string>,
-        onChunk: (r: Record<string, ArtistGenreMatch>, p: { done: number; total: number; etaSeconds: number }) => void,
+        onChunk: (r: Record<string, ArtistGenreMatch>, p: { done: number; total: number }) => void,
       ) {
-        expect(artists.map((a) => a.id)).toEqual(['x', 'y']);
+        expect(artists).toEqual([
+          { id: 'x', name: 'X', tracks: 1, mbid: 'mb-x' },
+          { id: 'y', name: 'Y', tracks: 1 },
+        ]);
         expect([...genres]).toEqual(['folk']);
-        onChunk({ x: match(['folk']) }, { done: 1, total: 2, etaSeconds: 1 });
+        onChunk({ x: match(['folk']) }, { done: 1, total: 2 });
         throw new Error('MusicBrainz request failed with HTTP 500');
       },
     } as unknown as MusicBrainzClient;
 
-    const result = await loadMusicBrainz(mb, liked, cache, () => {});
+    const result = await loadMusicBrainz(mb, liked, cache, ['folk'], () => {}, undefined, {
+      mbids: { x: 'mb-x' },
+      skip: (id) => id === 'covered',
+    });
     expect(result.error).toContain('HTTP 500');
     expect(result.data).toEqual({ cached: match(['jazz']), x: match(['folk']) });
     expect(cache.get('musicbrainz.artists')).toEqual(result.data);
     expect(musicBrainzGenres(result.data)).toEqual({ cached: ['jazz'], x: ['folk'] });
-
-    await loadMusicBrainz(mb, liked, cache, () => {}).catch(() => {});
-    expect(genreListCalls).toBe(1);
   });
 
   it('reports no error when the owner stops the lookup', async () => {
     const cache = new SessionCache(new MemoryStorage());
-    cache.set('musicbrainz.genres', ['folk']);
     const controller = new AbortController();
     const mb = {
       async findArtistGenres() {
@@ -148,7 +195,27 @@ describe('loadMusicBrainz', () => {
         throw new DOMException('aborted', 'AbortError');
       },
     } as unknown as MusicBrainzClient;
-    const result = await loadMusicBrainz(mb, liked, cache, () => {}, controller.signal);
+    const result = await loadMusicBrainz(mb, liked, cache, ['folk'], () => {}, controller.signal);
     expect(result.error).toBeUndefined();
+  });
+});
+
+describe('loadWikidata', () => {
+  it('looks up only artists it has not answered for, and caches every batch', async () => {
+    const cache = new SessionCache(new MemoryStorage());
+    cache.set('wikidata.artists', { known: { found: false, labels: [] } });
+    const liked = [track({ id: '1', artist: 'known' }), track({ id: '2', artist: 'a' }), track({ id: '3', artist: 'a' }), track({ id: '4', artist: 'b' })];
+    const wd = {
+      async findArtists(ids: string[], onBatch: (r: Record<string, WikidataArtist>) => void) {
+        expect(ids).toEqual(['a', 'b']);
+        onBatch({ a: { found: true, mbid: 'mb-a', labels: ['rock music'] } });
+        throw new Error('Wikidata request failed with HTTP 500');
+      },
+    } as unknown as WikidataClient;
+    const seen: string[][] = [];
+    const result = await loadWikidata(wd, liked, cache, (data) => seen.push(Object.keys(data)));
+    expect(result.error).toContain('HTTP 500');
+    expect(seen).toEqual([['known', 'a']]);
+    expect(cache.get('wikidata.artists')).toEqual(result.data);
   });
 });
