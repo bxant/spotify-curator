@@ -597,15 +597,19 @@ export class Mix {
   }
 
   private random(salt: string): () => number {
-    // mulberry32, seeded from the variant and the salt.
-    let a = hash(`${this.variant}:${salt}`);
-    return () => {
-      a = (a + 0x6d2b79f5) | 0;
-      let t = Math.imul(a ^ (a >>> 15), 1 | a);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
+    return seededRandom(`${this.variant}:${salt}`);
   }
+}
+
+/** Reproducible numbers in [0, 1): mulberry32, seeded from a hash of `seed`. */
+export function seededRandom(seed: string): () => number {
+  let a = hash(seed);
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 const DEFAULT_MIX = new Mix(0);
@@ -705,7 +709,7 @@ function groupBy<T>(items: T[], keyOf: (item: T) => string): Map<string, T[]> {
   return groups;
 }
 
-function titleCase(s: string): string {
+export function titleCase(s: string): string {
   return s.replace(/(^|[\s-])(\p{L})/gu, (_, sep: string, ch: string) => sep + ch.toUpperCase());
 }
 
@@ -713,7 +717,7 @@ function time(iso: string): number {
   return Date.parse(iso);
 }
 
-/** FNV-1a; only used to pick a stable, arbitrary representative. */
+/** FNV-1a; picks stable, arbitrary representatives and seeds `seededRandom`. */
 function hash(s: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {

@@ -337,6 +337,81 @@ body:has(.dock) main { padding-bottom: 160px; }
   .dock.running .dock-toggle .icon { animation: none; }
 }
 
+/* Build your own ----------------------------------------------------------- */
+
+.builder {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.builder h3 { font-size: 1.1rem; }
+.builder > p { max-width: 72ch; }
+.builder-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.picker { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); min-width: 0; }
+.picker summary {
+  display: grid;
+  gap: 2px;
+  padding: 8px 12px;
+  cursor: pointer;
+  list-style: none;
+  position: relative;
+  padding-right: 32px;
+}
+.picker summary::-webkit-details-marker { display: none; }
+.picker summary::after { content: '▾'; position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); }
+.picker[open] summary::after { content: '▴'; }
+.picker-title { font-size: 0.75rem; font-weight: 700; color: var(--muted); }
+.picker-value { font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.picker-body { display: grid; gap: 6px; padding: 0 8px 8px; }
+.picker-search, .builder-count input {
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  width: 100%;
+  min-width: 0;
+}
+.picker-list { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow-y: auto; }
+.picker-list label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 6px;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.picker-list label:hover { background: var(--surface-3); }
+.picker-list input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.picker-option { overflow-wrap: anywhere; }
+.picker-note { padding: 0 6px; }
+.builder-count { display: grid; gap: 4px; padding: 8px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); }
+.builder-actions { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; }
+.builder-status { color: var(--muted); flex: 1 1 260px; }
+.builder-status.error { color: var(--danger); }
+.built-controls { display: grid; gap: 8px; margin-top: 4px; }
+.built-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.shortfall {
+  font-size: 0.9rem;
+  background: var(--surface-2);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 6px 12px;
+}
+
 /* Recommendations: heading, their sort/filter toolbar, grid ---------------- */
 
 .section-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
