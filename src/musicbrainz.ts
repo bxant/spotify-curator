@@ -3,8 +3,9 @@
 // and Wikidata (src/wikidata.ts) only knows some artists, so this is the fallback for
 // artists still without genres.
 //
-// Artists Wikidata links to MusicBrainz need no matching. The others are matched by ISRC
-// first (the recording codes Spotify reports for liked tracks), then by exact name. Anything ambiguous is
+// Artists Wikidata links to MusicBrainz need no matching. The others are matched by
+// MusicBrainz' links to their Spotify page first, then by ISRC (the recording codes Spotify
+// reports for liked tracks), then by exact name. Anything ambiguous is
 // skipped. Genres are the artist's community tags that are on MusicBrainz's official
 // genre list. MusicBrainz allows about one request per second per IP and asks every
 // client to identify itself, so request starts are spaced out (at most two are open at
