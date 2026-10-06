@@ -32,6 +32,7 @@ import {
 import {
   cachedEnrichment,
   enrichmentProgress,
+  keysCovered,
   mergeEnrichment,
   openGenres,
   runEnrichment,
@@ -499,12 +500,17 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
     // One tab at a time runs the lookups (src/musicians-corner/shared-lookups.ts); while
     // another one does, this tab takes in the results it saves to the shared cache.
     let ran = false;
-    const pickUp = (e: StorageEvent) => {
-      if (ran || !e.key?.startsWith(CACHE_PREFIX)) return;
+    const pickUp = () => {
       mergeEnrichment(state.enrich, cachedEnrichment(lookupCache));
+      if (state.status.keys.state === 'running' && keysCovered(library.liked, state.enrich.keys)) state.status.keys = { state: 'done', errors: [] };
+    };
+    const onStorage = (e: StorageEvent) => {
+      if (ran || !e.key?.startsWith(CACHE_PREFIX)) return;
+      pickUp();
       view.changed();
     };
-    window.addEventListener('storage', pickUp);
+    window.addEventListener('storage', onStorage);
+    pickUp();
     void withLookupLock(lookupLocks(), AbortSignal.any([signal, stop.signal]), async () => {
       ran = true;
       mergeEnrichment(state.enrich, cachedEnrichment(lookupCache));
@@ -513,7 +519,7 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
         stop: stop.signal,
       });
     }).then((didRun) => {
-      window.removeEventListener('storage', pickUp);
+      window.removeEventListener('storage', onStorage);
       if (signal.aborted) return;
       // Stopped while another tab had the lookups: nothing ran here.
       if (!didRun) state.status = { keys: { state: 'stopped', errors: [] }, genres: { state: 'stopped', errors: [] } };

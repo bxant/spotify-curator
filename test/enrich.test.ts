@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   cachedEnrichment,
   enrichmentProgress,
+  keysCovered,
   mergeEnrichment,
   openGenres,
   runEnrichment,
@@ -37,6 +38,19 @@ describe('mergeEnrichment', () => {
     expect(mine.spotify).toEqual({ x: ['rock'], y: ['jazz'] });
     expect(Object.keys(mine.musicBrainz)).toEqual(['y']);
     expect(mine.genreNames).toEqual(['rock', 'jazz']);
+  });
+});
+
+describe('keysCovered', () => {
+  const liked = [track({ id: 'a' }), track({ id: 'b' })];
+
+  it('is true once every liked song has a key or a null answer', () => {
+    expect(keysCovered(liked, { a: key, b: null })).toBe(true);
+  });
+
+  it('is false while any liked song is still unanswered', () => {
+    expect(keysCovered(liked, { a: key })).toBe(false);
+    expect(keysCovered(liked, {})).toBe(false);
   });
 });
 
