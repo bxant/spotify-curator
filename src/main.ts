@@ -398,13 +398,13 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
   // Refresh data goes back to the default set.
   if (forceReload) cache.set(SET_KEY, null);
   const set = cache.get<SavedSet>(SET_KEY);
-  const idle: EnrichmentStatus['keys'] = { state: 'done', errors: [] };
   const enrich = cachedEnrichment(lookupCache);
   const state: CuratorState = {
     library,
     enrich,
     curatedKeys: enrich.keys,
-    status: { keys: { ...idle }, genres: { ...idle } },
+    // Lookups start right after the first render, so it must not claim there are no keys or genres.
+    status: { keys: { state: 'running', errors: [] }, genres: { state: 'running', errors: [] } },
     variant: set?.variant ?? 0,
     kept: set?.kept ?? [],
     criteria: route.name === 'home' ? { ...route.criteria } : { ...DEFAULT_CRITERIA },
