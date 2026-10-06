@@ -424,8 +424,13 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
   status.textContent = 'Checking which suggestions are already in your Spotify…';
   const saved = await loadSavedPlaylists(auth, client, library.profile.id);
   if (current !== generation) return;
-  // Refresh data goes back to the default set.
-  if (forceReload) cache.set(SET_KEY, null);
+  // Refresh data goes back to the default set and drops the playlist built from the old library.
+  if (forceReload) {
+    cache.set(SET_KEY, null);
+    const stale = cache.get<BuildState>(BUILD_KEY);
+    if (stale) cache.set(BUILD_KEY, { criteria: stale.criteria } satisfies BuildState);
+    removedStore.restoreAll(BUILT_KEY);
+  }
   const set = cache.get<SavedSet>(SET_KEY);
   const state: CuratorState = {
     library,
