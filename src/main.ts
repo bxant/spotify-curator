@@ -355,8 +355,6 @@ interface BuildState {
   /** The choices in the form, built or not. */
   criteria: BuildCriteria;
   built?: BuiltState;
-  /** The last Build found no matching songs. */
-  noMatch?: boolean;
 }
 
 interface BuiltState {
@@ -676,7 +674,6 @@ function createCuratorView(
     const again = prior && criteriaId(prior.criteria) === criteriaId(criteria) ? prior : undefined;
     const seed = (prior?.seed ?? 0) + 1;
     const result = buildPlaylist(state.library.liked, criteria, buildInputs(), { seed, previous: again?.rolls ?? [] });
-    state.build.noMatch = !result;
     if (result) {
       const rolls = [...(again?.rolls ?? []), result.playlist.tracks.map((t) => t.id)].slice(-MAX_ROLLS);
       state.build.built = { criteria, playlist: result.playlist, matched: result.matched, requested: result.requested, seed, rolls };
@@ -769,9 +766,6 @@ function createCuratorView(
         if (build(state.build.criteria)) {
           rememberHomeScroll();
           location.hash = playlistHref(BUILT_KEY);
-        } else {
-          render();
-          app.querySelector<HTMLElement>('#builder-build')?.focus();
         }
       },
     });
@@ -1448,7 +1442,7 @@ function builderPanel(
     const n = on.count(c);
     const songs = `${n.toLocaleString()} liked ${n === 1 ? 'song matches' : 'songs match'}`;
     build.disabled = n === 0;
-    status.classList.toggle('error', n === 0 || !!state.build.noMatch);
+    status.classList.toggle('error', n === 0);
     status.textContent =
       n === 0
         ? 'No liked songs match all of these choices. Choose more values, or fewer kinds of choices.'
@@ -1457,7 +1451,6 @@ function builderPanel(
           : `${songs}; ${c.count} will be picked at random, spread across artists.`;
   };
   const changed = () => {
-    state.build.noMatch = false;
     on.save();
     updateStatus();
   };
