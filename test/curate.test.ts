@@ -192,6 +192,11 @@ describe('curate: genres', () => {
     expect(stats.tracksWithGenres).toBe(41);
   });
 
+  it('leaves out excluded genres, and genres that mostly repeat them', () => {
+    const { playlists } = curate(liked, history(), { now: NOW, artistGenres, exclude: new Set(['genre:indie rock']) });
+    expect(playlists.filter((p) => p.kind === 'genre').map((p) => p.name)).toEqual(['Genre: Jazz']);
+  });
+
   it('caps tracks per artist inside a genre playlist', () => {
     const heavy = singles('h', 30, { artist: (i) => (i < 20 ? 'one' : `other${i}`) });
     const { playlists } = curate(heavy, history(), {
@@ -384,6 +389,39 @@ describe('curate: a different set', () => {
   const genreNames = Array.from({ length: 12 }, (_, g) => `genre${String(g).padStart(2, '0')}`);
   const artistGenres = Object.fromEntries(Array.from({ length: 60 }, (_, a) => [`a${a}`, [genreNames[a % 12]]]));
   const options = { now: NOW, artistGenres };
+
+  it('fills the slots of excluded suggestions with the next candidates', () => {
+    const exclude = new Set(['favorites', 'genre:genre00', 'era:1960']);
+    const all = curate(liked, h, options).playlists;
+    const rest = curate(liked, h, { ...options, exclude }).playlists;
+    const genreKeys = (ps: CuratedPlaylist[]) => ps.filter((p) => p.kind === 'genre').map((p) => p.key);
+    expect(genreKeys(all)).toHaveLength(LIMITS.maxGenrePlaylists);
+    expect(genreKeys(rest)).toEqual([...genreKeys(all).filter((k) => !exclude.has(k)), 'genre:genre08']);
+    expect(rest.map((p) => p.key)).not.toContain('favorites');
+    expect(rest.map((p) => p.key)).not.toContain('era:1960');
+    expect(find(rest, 'era:1970')).toEqual(find(all, 'era:1970'));
+  });
+
+  it('keeps unsaved artist and key picks in place when a saved one is excluded', () => {
+    const many = Array.from({ length: 12 }, (_, b) => singles(`b${b}-`, 30 - b, { artist: () => `artist${b}` })).flat();
+    const trackKeys: Record<string, TrackKey | null> = {};
+    for (const t of many) {
+      const b = Number(t.id.slice(1, t.id.indexOf('-')));
+      trackKeys[t.id] = { key: b, mode: 1 };
+    }
+    const keysOf = (ps: CuratedPlaylist[], kind: string) => ps.filter((p) => p.kind === kind).map((p) => p.key);
+    for (const kind of ['artist', 'key']) {
+      for (const variant of [0, 1, 2]) {
+        const all = keysOf(curate(many, history(), { now: NOW, trackKeys, variant }).playlists, kind);
+        const exclude = new Set([kind === 'artist' ? 'artist:artist0' : 'key:0:1']);
+        const rest = keysOf(curate(many, history(), { now: NOW, trackKeys, variant, exclude }).playlists, kind);
+        expect(all).toHaveLength(6);
+        expect(rest).toHaveLength(6);
+        expect(rest).toEqual(expect.arrayContaining(all.filter((k) => !exclude.has(k))));
+        expect(rest.some((k) => exclude.has(k))).toBe(false);
+      }
+    }
+  });
 
   it('variant 0 is the default set', () => {
     expect(curate(liked, h, { ...options, variant: 0 })).toEqual(curate(liked, h, options));

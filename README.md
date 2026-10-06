@@ -12,6 +12,12 @@ Click a card to open the playlist on its own page (`#/playlist/<key>`): big cove
 
 On a playlist's page, **×** removes a track from that suggestion before you create it. Removed tracks stay listed below the track list, where **Restore** (or **Restore all**) brings them back. Removals apply everywhere the suggestion appears (card, counts, filters, and **Create in Spotify**) and last for the browser tab's session, across Back, reload, **Refresh data** and different sets.
 
+### Already in your Spotify
+
+On every load the page reads your own playlists (never changing them) so suggestions you saved in an earlier session are not offered again. Each playlist the app creates ends its description with `Curated from Liked Songs by spotify-curator.`; a suggestion counts as saved when one of your playlists with that tag (or the plain `Curated from Liked Songs.` earlier versions wrote) has its name. A same-named playlist without the tag, or a tagged one you renamed, counts only when at least 60% of the tracks are shared; the page reads the tracks of just those few playlists. Saved suggestions are hidden and the next candidates take their place where there are more (artist, genre and key picks). A line above the cards says how many are hidden; **Show them** lists them marked **In your Spotify**, with **Open in Spotify** and **Create again**.
+
+Sessions signed in before the app asked to read playlists see a **Reconnect Spotify** link to grant it; until then only this session's playlists are recognized.
+
 | Playlist | How it is picked |
 | --- | --- |
 | **Real Favorites** | Liked songs that appear in your top tracks (4 weeks, 6 months, 1 year) or recent plays, most played first. |
@@ -80,7 +86,8 @@ npm run build     # typecheck + production build
 | `src/browse.ts` | Pure sort and filter logic for the suggestions |
 | `src/route.ts` | Pure hash routes: the recommendations (sort and filters in the query) and playlist pages |
 | `src/removed-store.ts` | Tracks removed from suggestions, kept for the session |
-| `src/spotify.ts` | Spotify Web API client: paging, 429 `Retry-After`, 401 refresh, playlist creation |
+| `src/saved.ts` | Pure matching of suggestions against the playlists already in your Spotify, tested with `test/fixtures/saved-playlists.ts` |
+| `src/spotify.ts` | Spotify Web API client: paging, 429 `Retry-After`, 401 refresh, playlist creation, reading your own playlists |
 | `src/enrich.ts` | Background key and genre lookups: runs the services in order, merges their genres, counts progress |
 | `src/reccobeats.ts` | Musical key lookups via ReccoBeats |
 | `src/wikidata.ts` | Batched artist genre and MusicBrainz ID lookups via Wikidata |
@@ -100,6 +107,8 @@ This app only uses endpoints that the Spotify Web API docs list as available to 
 | Top tracks / artists | `GET /me/top/{tracks,artists}` | `user-top-read` |
 | Recently played | `GET /me/player/recently-played` | `user-read-recently-played` |
 | Artist genres | `GET /artists/{id}` (one at a time, only for artists other sources have no genres for) | none |
+| Your own playlists (to recognize saved suggestions) | `GET /me/playlists` (50 per page) | `playlist-read-private` |
+| Tracks of a few of your own playlists | `GET /playlists/{id}/items` | `playlist-read-private` |
 | Create playlist | `POST /me/playlists` (`public: false`) | `playlist-modify-private` |
 | Add tracks | `POST /playlists/{id}/items` (100 per request) | `playlist-modify-private` |
 
