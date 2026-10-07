@@ -71,6 +71,17 @@ export interface CuratedPlaylist {
   /** One-sentence explanation of why these tracks were chosen. */
   reason: string;
   tracks: LikedTrack[];
+  /** Set on each part of a suggestion longer than one part (see src/parts.ts). */
+  part?: PlaylistPart;
+}
+
+/** Where a part sits in its series: the suggestion it was split from, its number and how many there are. */
+export interface PlaylistPart {
+  /** Key of the whole suggestion, which is also the key of part 1. */
+  series: string;
+  /** 1-based. */
+  number: number;
+  of: number;
 }
 
 /** One of the signed-in user's own playlists, as far as matching saved suggestions needs it. */

@@ -10,6 +10,8 @@ The page shows your Spotify profile, a few library stats, and under **Your recom
 
 Click a card to open the playlist on its own page (`#/playlist/<key>`): big cover, reason, create controls, and the full track list with title, artist, album, year, and key and genres where known. **Back to recommendations** (or the browser's back button) returns to the grid with its sort, filters and scroll position as you left them; the page's address keeps the sort and filters (`#/?sort=decade&genre=rock`), so reloads keep them too.
 
+Each song also has **Chords ↗**, a Google search for its title, artist and "chords" in a new tab, so any free chord site can turn up. The page never fetches chord data itself and cannot tell whether chords exist, so the link is left out only for songs whose genres are all clearly not guitar music: hip hop and rap (trap, drill, grime) and electronic and dance (house, techno, trance, dubstep, drum and bass, …), unless the genre also names a guitar style (rap rock, electronic rock). Songs whose genres are not known yet keep the link (rule in `src/chords.ts`).
+
 On a playlist's page, **×** removes a track from that suggestion before you create it. Removed tracks stay listed below the track list, where **Restore** (or **Restore all**) brings them back. Removals apply everywhere the suggestion appears (card, counts, filters, and **Create in Spotify**) and last for the browser tab's session, across Back, reload, **Refresh data** and different sets.
 
 ### Already in your Spotify
@@ -28,11 +30,15 @@ Sessions signed in before the app asked to read playlists see a **Reconnect Spot
 | **Key of …** | Up to 6 of the most common musical keys (with the Camelot code for harmonic mixing), found in the background (see [Musical key](#musical-key-reccobeats)). |
 | **The 1990s, …** | One playlist per release decade, in release order. |
 
-Genre, key and decade playlists hold at most 100 tracks: played favorites first, then unplayed songs spread across your liked-at timeline, at most 4 per artist. They use the album-thinned library, so an album you liked whole contributes only its played tracks (or one track if none were played).
+Genre, key and decade playlists are picked from up to 100 tracks: played favorites first, then unplayed songs spread across your liked-at timeline, at most 4 per artist. They use the album-thinned library, so an album you liked whole contributes only its played tracks (or one track if none were played).
+
+### 25 songs at a time
+
+A card shows, and **Create in Spotify** creates, at most 25 songs, so the page stays easy to pick from. A longer suggestion is split into parts of 25 kept in the background (`src/parts.ts`): **More like this** on its card or page reveals the next part as a playlist of its own, "Rock - Part 2" with songs 26–50, then Part 3 and Part 4. Each part has its own page (`#/playlist/genre:rock|part:2`), removals, filters (described by the whole suggestion's genre, key, decade or artist) and **Create in Spotify**. Part 1 keeps the suggestion's name. A part already in your Spotify is set aside like any saved suggestion and the next part takes its place; only once every part is saved does a different suggestion fill in. A later part also counts as saved when a tagged playlist with the suggestion's own name (earlier versions saved suggestions whole) holds at least 60% of its songs. A suggestion kept through **Curate a different set** offers no next part. Revealed parts last for the tab's session and reset with **Curate a different set** or **Refresh data**.
 
 ### Sort and filter
 
-The **Sort & filter these playlists** toolbar at the top of **Your recommendations** only changes which suggestions are shown and in what order; it never curates new ones. It shows how many of the playlists match and has a **Clear filters** button. Sort the suggestions by type, decade, genre, key (Camelot order), artist or track count, and filter them by type, decade, genre, key, artist and size. A decade, genre or key describes a playlist when at least 20% of its tracks have it; an artist is listed for a playlist when at least 2 of its tracks are theirs. Each filter only offers values that match a suggestion, so genre and key filters fill in as the background lookups find genres and keys.
+The **Sort & filter these playlists** toolbar at the top of **Your recommendations** only changes which suggestions are shown and in what order; it never curates new ones. It shows how many of the playlists match and has a **Clear filters** button. Sort the suggestions by type, decade, genre, key (Camelot order), artist or track count, and filter them by type, decade, genre, key, artist and size (10, 20 or 25 songs and up). A decade, genre or key describes a playlist when at least 20% of its tracks have it; an artist is listed for a playlist when at least 2 of its tracks are theirs. Each filter only offers values that match a suggestion, so genre and key filters fill in as the background lookups find genres and keys.
 
 ### Curate a different set
 
@@ -50,26 +56,9 @@ Spotify has no per-track play counts. A liked song counts as played when it appe
 
 An album counts as "liked whole" when at least 4 of its tracks, and at least 40% of the album, were liked within one hour.
 
-## Musicians Corner
+### Several tabs
 
-A play-along corner for guitarists, part of the same app. **Musicians Corner ↗** in the header (once signed in) opens it in a new browser tab, already signed in and with the library this tab loaded.
-
-**Goals.** Make the key playlists the curator already suggests useful for jamming: pick a playlist in a key you like, see how to play each song on guitar, and jump to chords and the recording. It reuses the curator's suggestions, playlist pages and **Create in Spotify** rather than curating anything of its own, and it never fetches, scrapes or embeds chord data: chords stay on Ultimate Guitar. Later ideas (not built yet): a **Find on YouTube** link per song.
-
-What it shows (`#/musicians`):
-
-- The **Key of …** playlists from your current recommendations (including any already in your Spotify, marked as such), each with its Camelot code and a capo hint for the key. A different set curated in the curator tab shows up here after reopening **Musicians Corner ↗** from that tab; reloading the corner keeps the set it was opened with.
-- **Easy guitar keys only** limits the list to keys playable with open chords and no capo: G, C, D, A or E major, or E, A or D minor (`#/musicians?easy=1`).
-- Opening a playlist shows its own page (`#/musicians/playlist/<key>`), like the curator's: track removal and **Create in Spotify**, so the playlist is easy to find in Spotify while you play. Each song also shows its key, a capo hint, **Chords ↗** (an [Ultimate Guitar](https://www.ultimate-guitar.com) search for the artist and title) and **Play ↗** (the track on open.spotify.com), both in a new tab.
-- While keys are still being looked up and there are no key playlists yet, it says so and the background-lookup panel shows the progress.
-
-Capo hints (`capoHint` in `src/musicians-corner/guitar.ts`) pick the lowest capo fret that lets you play the key with open shapes of the same mode: G, C, D, A, E for major keys, Em, Am, Dm for minor ones. F major is "Capo 1 · E shapes" (play the chords a semitone lower, as E shapes; or capo 3 with D shapes); every key needs at most a capo on fret 4.
-
-### How the new tab arrives signed in
-
-The sign-in token and library live in each tab's `sessionStorage`, so a plain new tab would start signed out. The header link carries a one-off nonce (`/?handoff=<nonce>#/musicians`); the new tab asks for its session over a same-origin [`BroadcastChannel`](https://developer.mozilla.org/docs/Web/API/BroadcastChannel), and only the tab that made that link answers, with the token and the `curator.cache.v1.*` entries (never the PKCE verifier). The new tab copies them into its own `sessionStorage`, drops the nonce from the address, and loads from that cache without refetching the library. Nothing passes through `localStorage` or disk, so tokens still vanish when the tabs close. If no tab answers within 4 seconds (the curator tab was closed or signed out), the new tab offers **Connect Spotify** and returns to the corner after signing in.
-
-The tabs stay in step afterwards: **Sign out** in any tab signs out every curator tab (each clears its own session data, and the shared lookup cache is cleared as before), and a refreshed token is passed to tabs holding the refresh token it replaced. Key and genre lookups run in one tab at a time (a [Web Lock](https://developer.mozilla.org/docs/Web/API/Web_Locks_API)), so a second tab never doubles the request rate to the lookup services; a waiting tab picks up the results the other one saves, and shows its key playlists as soon as every liked song's key is in, without waiting for the other tab's genre lookups. Removals, created playlists and a different set are per tab after the handoff.
+Each tab signs in on its own, since the sign-in and library live in the tab's `sessionStorage`. Key and genre lookups run in one tab at a time (a [Web Lock](https://developer.mozilla.org/docs/Web/API/Web_Locks_API), `src/shared-lookups.ts`), so a second signed-in tab never doubles the request rate to the lookup services; a waiting tab picks up the results the other one saves to the shared lookup cache.
 
 ## Setup
 
@@ -124,7 +113,7 @@ npm run build     # typecheck + production build
 | `src/curate.ts` | Pure curation logic (no network, no DOM), including alternative sets and kept suggestions, tested in `test/curate.test.ts` with fixture data |
 | `src/builder.ts` | Pure "Build your own" matching and picking, tested in `test/builder.test.ts` |
 | `src/browse.ts` | Pure sort and filter logic for the suggestions |
-| `src/route.ts` | Pure hash routes: the recommendations (sort and filters in the query), playlist pages, and the Musicians Corner |
+| `src/route.ts` | Pure hash routes: the recommendations (sort and filters in the query) and playlist pages |
 | `src/removed-store.ts` | Tracks removed from suggestions, kept for the session |
 | `src/saved.ts` | Pure matching of suggestions against the playlists already in your Spotify, tested with `test/fixtures/saved-playlists.ts` |
 | `src/spotify.ts` | Spotify Web API client: paging, 429 `Retry-After`, 401 refresh, playlist creation, reading your own playlists |
@@ -134,10 +123,9 @@ npm run build     # typecheck + production build
 | `src/musicbrainz.ts` | Artist matching (pure) and genre lookups via MusicBrainz |
 | `src/auth.ts` | PKCE sign-in and token refresh |
 | `src/library.ts` | Loads and caches library data (for the session) and key and genre lookups (in the browser) |
-| `src/musicians-corner/guitar.ts` | Pure capo hints, easy-key filter and play-along links (Ultimate Guitar search, open.spotify.com), tested in `test/musicians-corner.test.ts` |
-| `src/musicians-corner/handoff.ts` | Hands the sign-in and session cache to the Musicians Corner tab and keeps tabs in step (sign-out, token refresh), tested in `test/handoff.test.ts` |
-| `src/musicians-corner/shared-lookups.ts` | Lets one tab at a time run the key and genre lookups |
-| `src/musicians-corner/view.ts` | The Musicians Corner page and its extra track columns |
+| `src/parts.ts` | Pure splitting of suggestions into parts of 25 and which parts are shown, tested in `test/parts.test.ts` |
+| `src/chords.ts` | Pure Google chords-search link and the non-guitar genre rule that hides it, tested in `test/chords.test.ts` |
+| `src/shared-lookups.ts` | Lets one tab at a time run the key and genre lookups |
 | `src/dom.ts` | Tiny DOM helpers shared by the views |
 | `src/main.ts` | The page: routes, the curator views, playlist pages |
 
@@ -174,7 +162,7 @@ Spotify has closed musical keys (audio features) to new developer apps and depre
 | [ReccoBeats](https://reccobeats.com) | Musical keys | The Spotify track IDs of your liked songs |
 | [Wikidata](https://www.wikidata.org) | Artist genres and MusicBrainz artist IDs | Spotify artist IDs |
 | [MusicBrainz](https://musicbrainz.org) | Genres for artists Wikidata has none for | Spotify artist IDs, artist names, MusicBrainz artist IDs, and the ISRC recording codes of liked songs |
-| [Ultimate Guitar](https://www.ultimate-guitar.com) | Nothing to the page: **Chords ↗** in the [Musicians Corner](#musicians-corner) opens its search in a new tab | Only when you click **Chords ↗**: that song's artist and title, in the search address your browser opens |
+| [Google Search](https://www.google.com) | Nothing to the page: **Chords ↗** next to a song on a playlist page opens a search for its chords in a new tab | Only when you click **Chords ↗**: that song's title and artist, in the search address your browser opens |
 
 None of them receive your Spotify account, sign-in or listening history. Results are cached per song or artist in `localStorage`, so later visits (and **Refresh data**) only look up what is new; **Sign out** clears them.
 

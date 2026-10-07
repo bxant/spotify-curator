@@ -26,7 +26,6 @@ import {
   releaseYear,
   trackGenres,
   trackSignature,
-  withKept,
   type CurationResult,
 } from './curate';
 import {
@@ -44,17 +43,17 @@ import { loadLibrary, type LibrarySnapshot } from './library';
 import { MusicBrainzClient } from './musicbrainz';
 import { mapWithConcurrency } from './http';
 import { ReccoBeatsClient } from './reccobeats';
-import { formatRoute, homeHref, isMusiciansRoute, musiciansHref, musiciansPlaylistHref, parentRoute, parseRoute, playlistHref, type Route } from './route';
+import { seriesKey, showSuggestions } from './parts';
+import { formatRoute, homeHref, parentRoute, parseRoute, playlistHref, type Route } from './route';
 import { CACHE_PREFIX, SessionCache, browserCache } from './session-cache';
 import { CreatedStore } from './created-store';
 import { RemovedStore } from './removed-store';
-import { APP_TAG, matchSaved, playlistDescription, setAsideSaved, type SavedMatch } from './saved';
+import { APP_TAG, matchSaved, playlistDescription, type SavedMatch } from './saved';
 import { SpotifyClient, type CreatedPlaylist } from './spotify';
 import type { CuratedPlaylist, LikedTrack, PlaylistKind, SavedPlaylist, SavedTracks, TrackKey } from './types';
 import { WikidataClient } from './wikidata';
-import { CHANNEL_NAME, HANDOFF_PARAM, TabLink, handoffHref, handoffNonce, receiveSession } from './musicians-corner/handoff';
-import { withLookupLock, type Locks } from './musicians-corner/shared-lookups';
-import { musicianColumns, musiciansHome, type TrackColumn } from './musicians-corner/view';
+import { withLookupLock, type Locks } from './shared-lookups';
+import { chordsUrl, showChordsLink } from './chords';
 
 const app = document.getElementById('app') as HTMLElement;
 const cache = new SessionCache();
@@ -96,9 +95,8 @@ function nextGeneration(): number {
 }
 
 // ---------------------------------------------------------------------------
-// Routing: the recommendations (#/, with sort and filters in the query), one page per
-// playlist (#/playlist/<key>), and the Musicians Corner (#/musicians…, usually in a tab of
-// its own; see src/musicians-corner/). See src/route.ts.
+// Routing: the recommendations (#/, with sort and filters in the query) and one page per
+// playlist (#/playlist/<key>). See src/route.ts.
 
 let route: Route = parseRoute(location.hash);
 /** Scroll position of the recommendations when a playlist was opened, for the return trip. */
@@ -121,7 +119,7 @@ window.addEventListener('hashchange', () => {
 interface EntryState {
   /** Scroll position of the recommendations when a playlist was opened from them. */
   scrollY?: number;
-  /** This playlist page was opened from the entry right before it, the page its Back returns to (recommendations or Musicians Corner). */
+  /** This playlist page was opened from the entry right before it, the recommendations its Back returns to. */
   fromHome?: boolean;
 }
 
@@ -239,22 +237,6 @@ async function start() {
     route = parseRoute(location.hash);
   }
 
-  // The Musicians Corner tab picks up the sign-in and library of the tab that opened it.
-  const nonce = handoffNonce(location.search);
-  if (nonce) {
-    if (!auth.isSignedIn() && channel) {
-      show(h('section', { class: 'panel center' }, brand(), h('h1', {}, 'Opening the Musicians Corner'), h('div', { class: 'spinner', 'aria-hidden': 'true' })));
-      await receiveSession(channel, sessionStorage, nonce);
-    }
-    const url = new URL(location.href);
-    url.searchParams.delete(HANDOFF_PARAM);
-    history.replaceState(history.state, '', url.pathname + url.search + url.hash);
-    if (!auth.isSignedIn()) {
-      showSignIn(auth, 'Could not pick up the sign-in from the curator tab (it may have been closed or signed out). Connect Spotify here instead.');
-      return;
-    }
-  }
-
   if (!auth.isSignedIn()) {
     showSignIn(auth);
     return;
@@ -266,8 +248,6 @@ function lookupLocks(): Locks | undefined {
   return 'locks' in navigator ? navigator.locks : undefined;
 }
 
-/** This tab's end of the cross-tab channel; unset where BroadcastChannel is unavailable. */
-let tabLink: TabLink | undefined;
 /** The page to come back to after signing in, since Spotify redirects to /callback. */
 const RETURN_HASH_KEY = 'curator.return-hash';
 
@@ -300,8 +280,7 @@ function signOutHere(auth: SpotifyAuth) {
 }
 
 function brand(): HTMLElement {
-  const name = isMusiciansRoute(route) ? 'Musicians Corner' : 'Liked Songs Curator';
-  return h('div', { class: 'brand' }, h('span', { class: 'brand-mark', 'aria-hidden': 'true' }, icon('note')), name);
+  return h('div', { class: 'brand' }, h('span', { class: 'brand-mark', 'aria-hidden': 'true' }, icon('note')), 'Liked Songs Curator');
 }
 
 function showSetup() {
@@ -387,6 +366,8 @@ interface CuratorState {
   variant: number;
   /** Suggestions the owner kept when curating a different set, exactly as they were. */
   kept: CuratedPlaylist[];
+  /** Parts shown per suggestion (series key), for the ones "More like this" revealed more of; 1 when missing. */
+  revealed: Record<string, number>;
   criteria: BrowseCriteria;
   saved: SavedState;
   /** Also list the suggestions already saved in Spotify (hidden by default). */
@@ -433,6 +414,7 @@ const MAX_ROLLS = 20;
 interface SavedSet {
   variant: number;
   kept: CuratedPlaylist[];
+  revealed?: Record<string, number>;
 }
 
 async function showCurator(auth: SpotifyAuth, forceReload = false) {
@@ -485,6 +467,7 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
     status: { keys: { state: 'running', errors: [] }, genres: { state: 'running', errors: [] } },
     variant: set?.variant ?? 0,
     kept: set?.kept ?? [],
+    revealed: set?.revealed ?? {},
     criteria: route.name === 'home' ? { ...route.criteria } : { ...DEFAULT_CRITERIA },
     saved,
     showSaved: false,
@@ -499,7 +482,7 @@ async function showCurator(auth: SpotifyAuth, forceReload = false) {
     state.stop = () => stop.abort();
     state.status = { keys: { state: 'running', errors: [] }, genres: { state: 'running', errors: [] } };
     const clients = { spotify: client, reccoBeats, wikidata, musicBrainz };
-    // One tab at a time runs the lookups (src/musicians-corner/shared-lookups.ts); while
+    // One tab at a time runs the lookups (src/shared-lookups.ts); while
     // another one does, this tab takes in the results it saves to the shared cache.
     let ran = false;
     const pickUp = () => {
@@ -572,7 +555,7 @@ function createCuratorView(
 ) {
   const dock = statusDock(actions);
 
-  const curateNow = () => {
+  const curateNow = (want?: string) => {
     const { enrich, curatedKeys } = state;
     const open = openGenres(enrich);
     const options = {
@@ -585,14 +568,17 @@ function createCuratorView(
     let result = curate(state.library.liked, state.library.history, options);
     const savedList = savedPlaylists(state);
     const needTracks = new Set<string>();
-    // Saved suggestions are set aside and the next candidates fill in; a card created
-    // from this page keeps showing its own Open links instead. Matching and Create both
-    // see the tracks as shown, without the ones the owner removed.
-    const { fresh, saved } = setAsideSaved(
-      (exclude) => {
-        if (exclude.size > 0) result = curate(state.library.liked, state.library.history, { ...options, exclude });
-        return withKept(state.kept, result.playlists);
+    // Suggestions are shown in parts of 25 (src/parts.ts). A saved part is set aside and
+    // the suggestion's next part fills in; once every part is saved, the next candidate
+    // does. A card created from this page keeps showing its own Open links instead.
+    // Matching and Create both see the tracks as shown, without the ones the owner removed.
+    const { fresh, saved, more, revealed } = showSuggestions(
+      (used) => {
+        if (used.size > 0) result = curate(state.library.liked, state.library.history, { ...options, exclude: used });
+        return result.playlists;
       },
+      state.kept,
+      state.revealed,
       (playlists, matched) => {
         const check = matchSaved(
           playlists.filter((p) => !createdStore.hasRecord(p.key)).map((p) => removedStore.apply(p)),
@@ -602,6 +588,7 @@ function createCuratorView(
         for (const id of check.needTracks) needTracks.add(id);
         return check.matches;
       },
+      want,
     );
     /** As curated (kept suggestions carry these, so a removal can still be undone after a new set). */
     const curated = [...fresh, ...saved.map((s) => s.playlist)];
@@ -617,6 +604,9 @@ function createCuratorView(
       freshItems: shown.map(browsable),
       savedItems: saved.map((s) => browsable(removedStore.apply(s.playlist))),
       savedMatches: new Map(saved.map((s) => [s.playlist.key, s.match])),
+      /** The next part of a suggestion, keyed by the last part of it on show. */
+      more,
+      revealed,
       needTracks,
       artistGenres,
       keptKeys: new Set(state.kept.map((p) => p.key)),
@@ -653,6 +643,14 @@ function createCuratorView(
     scores,
   });
   const saveBuild = () => cache.set(BUILD_KEY, state.build);
+  const saveSet = () => cache.set(SET_KEY, { variant: state.variant, kept: state.kept, revealed: state.revealed } satisfies SavedSet);
+
+  /** "More like this": shows the next part of the suggestion `p` belongs to. */
+  const revealMore = (p: CuratedPlaylist) => {
+    const series = seriesKey(p);
+    state.revealed = { ...state.revealed, [series]: (state.revealed[series] ?? 1) + 1 };
+    saveSet();
+  };
 
   /**
    * Builds a playlist from the choices; with the same choices as the latest one, it is a
@@ -696,14 +694,15 @@ function createCuratorView(
      */
     let cards = new Map<string, { sig: string; el: HTMLElement }>();
     const renderGrid = (background = false) => {
-      const { keptKeys, savedMatches } = cur;
+      const { keptKeys, savedMatches, more } = cur;
       const all = items();
       const visible = browse(all, state.criteria);
       renderSavedLine();
       const wanted = visible.map(({ playlist, facets }) => {
         const kept = keptKeys.has(playlist.key);
         const saved = savedMatches.get(playlist.key);
-        return { playlist, facets, kept, saved, sig: cardSignature(playlist, facets, kept, saved) };
+        const next = saved ? undefined : more.get(playlist.key);
+        return { playlist, facets, kept, saved, next, sig: cardSignature(playlist, facets, kept, saved, next) };
       });
       // Leave the cards alone while the focused one would change; the next update catches up.
       const focused = grid.contains(document.activeElement) ? document.activeElement?.closest<HTMLElement>('.card') : null;
@@ -727,9 +726,9 @@ function createCuratorView(
         return;
       }
       const next = new Map<string, { sig: string; el: HTMLElement }>();
-      for (const { playlist, facets, kept, saved, sig } of wanted) {
+      for (const { playlist, facets, kept, saved, next: nextPart, sig } of wanted) {
         const old = cards.get(playlist.key);
-        const el = old?.sig === sig ? old.el : playlistCard(client, playlist, facets, kept, saved);
+        const el = old?.sig === sig ? old.el : playlistCard(client, playlist, facets, kept, saved, nextPart && { ...nextPart, reveal: () => showMore(playlist, nextPart.next) });
         // Playlists that appear while the page is open (e.g. once keys arrive) fade in, once.
         if (!old && background && cards.size > 0) {
           el.classList.add('fresh');
@@ -743,6 +742,14 @@ function createCuratorView(
     const onCriteria = () => {
       syncHomeUrl();
       renderGrid();
+    };
+    /** Reveals the next part as its own card, right after this one, and moves focus to it. */
+    const showMore = (p: CuratedPlaylist, next: CuratedPlaylist) => {
+      revealMore(p);
+      // The grid leaves a focused card alone while it would change, and this one loses its button.
+      (document.activeElement as HTMLElement | null)?.blur();
+      refresh();
+      app.querySelector<HTMLElement>(`a.card-link[href="${CSS.escape(playlistHref(next.key))}"]`)?.focus();
     };
 
     let heroEl = hero(state, cur.result);
@@ -796,7 +803,8 @@ function createCuratorView(
         recurateDialog(shown, keptKeys, (keep) => {
           state.kept = keepSelected(curated, keep);
           state.variant++;
-          cache.set(SET_KEY, { variant: state.variant, kept: state.kept } satisfies SavedSet);
+          state.revealed = {};
+          saveSet();
           render();
         });
       });
@@ -842,52 +850,15 @@ function createCuratorView(
     };
   };
 
-  /** The Musicians Corner home (src/musicians-corner/view.ts) over the current suggestions. */
-  const renderMusicians = (initialEasy: boolean) => {
-    let easy = initialEasy;
-    let cur = curateNow();
-    const page = h('div', { class: 'corner-page' });
-    const items = () => [...cur.freshItems, ...cur.savedItems];
-    const keysLoading = () => state.status.keys.state === 'running';
-    /** What the page shows, so it is only redrawn when that changes. */
-    const signature = () =>
-      JSON.stringify([easy, keysLoading(), items().map((i) => [trackSignature(i.playlist), cur.savedMatches.get(i.playlist.key)?.playlist.id])]);
-    let drawn = '';
-    const draw = () => {
-      drawn = signature();
-      const ui = {
-        cover,
-        createControls: (p: CuratedPlaylist) => createControls(client, p, cur.savedMatches.get(p.key)),
-        saved: (p: CuratedPlaylist) => cur.savedMatches.has(p.key),
-        beforeOpen: rememberHomeScroll,
-      };
-      page.replaceChildren(musiciansHome({ playlists: items().map((i) => i.playlist), easy, keysLoading: keysLoading() }, ui, setEasy));
-    };
-    const setEasy = (next: boolean) => {
-      easy = next;
-      route = { name: 'musicians', easy };
-      history.replaceState(history.state, '', musiciansHref(easy));
-      draw();
-      app.querySelector<HTMLElement>('#easy-keys')?.focus();
-    };
-    show(topBar(auth), page);
-    draw();
-    fetchNeededTracks(cur);
-
-    refresh = () => {
-      cur = curateNow();
-      fetchNeededTracks(cur);
-      if (signature() === drawn) return;
-      const focusedToggle = document.activeElement?.id === 'easy-keys';
-      draw();
-      if (focusedToggle) app.querySelector<HTMLElement>('#easy-keys')?.focus();
-    };
-  };
-
-  const renderPlaylist = (key: string, musician = false) => {
-    const isBuilt = key === BUILT_KEY && !musician;
+  const renderPlaylist = (key: string) => {
+    const isBuilt = key === BUILT_KEY;
     const find = () => {
-      const cur = curateNow();
+      const cur = curateNow(isBuilt ? undefined : key);
+      // A link to a part not revealed yet (e.g. from another session) reveals it.
+      if (cur.revealed !== state.revealed) {
+        state.revealed = { ...cur.revealed };
+        saveSet();
+      }
       const built = isBuilt ? state.build.built : undefined;
       // Saved recommendations keep their page even while hidden from the grid.
       const builtPlaylist = built && removedStore.apply(built.playlist);
@@ -895,8 +866,15 @@ function createCuratorView(
         ? builtPlaylist && { playlist: builtPlaylist, facets: playlistFacets(builtPlaylist, { artistGenres: cur.artistGenres, trackKeys: state.enrich.keys }) }
         : [...cur.freshItems, ...cur.savedItems].find((i) => i.playlist.key === key);
       const saved = cur.savedMatches.get(key);
+      const next = saved || isBuilt ? undefined : cur.more.get(key);
       fetchNeededTracks(cur);
-      return { cur, item, saved, signature: item ? `${trackSignature(item.playlist)}|${saved?.playlist.id ?? ''}` : '' };
+      return {
+        cur,
+        item,
+        saved,
+        next,
+        signature: item ? `${trackSignature(item.playlist)}|${saved?.playlist.id ?? ''}|${next?.next.key ?? ''}` : '',
+      };
     };
     let shown = find();
     /** Offers the playlist as newly curated, instead of changing its tracks under the reader. */
@@ -932,7 +910,7 @@ function createCuratorView(
         ),
     };
     const draw = () => {
-      const { cur, item, saved } = shown;
+      const { cur, item, saved, next } = shown;
       const original = isBuilt ? state.build.built?.playlist : cur.curated.find((p) => p.key === key);
       const byId = new Map(original?.tracks.map((t) => [t.id, t]));
       const removed = removedStore
@@ -950,11 +928,15 @@ function createCuratorView(
               { artistGenres: cur.artistGenres, trackKeys: state.enrich.keys, kept: cur.keptKeys.has(key), saved },
               { removed, ...editing },
               back,
-              isBuilt && state.build.built && builtControls(state.build.built, retry),
-              musician ? { columns: musicianColumns(state.enrich.keys), backLabel: 'Back to Musicians Corner' } : undefined,
+              isBuilt ? state.build.built && builtControls(state.build.built, retry) : next && moreButton(next, () => openMore(item.playlist, next.next)),
             )
-          : missingPlaylistPage(state, back, isBuilt, musician),
+          : missingPlaylistPage(state, back, isBuilt),
       );
+    };
+    /** Reveals the next part and opens its page. */
+    const openMore = (p: CuratedPlaylist, nextPart: CuratedPlaylist) => {
+      revealMore(p);
+      location.hash = playlistHref(nextPart.key);
     };
     const retry = () => {
       const built = state.build.built;
@@ -997,10 +979,7 @@ function createCuratorView(
 
   const render = () => {
     if (!isCurrent()) return;
-    document.title = isMusiciansRoute(route) ? 'Musicians Corner · Liked Songs Curator' : 'Liked Songs Curator';
     if (route.name === 'playlist') renderPlaylist(route.key);
-    else if (route.name === 'musicians-playlist') renderPlaylist(route.key, true);
-    else if (route.name === 'musicians') renderMusicians(route.easy);
     else renderHome();
   };
 
@@ -1061,14 +1040,6 @@ function createCuratorView(
       if (card) card.focus({ preventScroll: true });
       return;
     }
-    if (route.name === 'musicians') {
-      render();
-      if (from.name === 'musicians') return;
-      window.scrollTo(0, savedHomeScroll());
-      const href = lastPlaylistKey && musiciansPlaylistHref(lastPlaylistKey, route.easy);
-      if (href) app.querySelector<HTMLAnchorElement>(`a.card-link[href="${CSS.escape(href)}"]`)?.focus({ preventScroll: true });
-      return;
-    }
     render();
     window.scrollTo(0, 0);
     app.querySelector<HTMLElement>('.playlist-page h1')?.focus({ preventScroll: true });
@@ -1092,25 +1063,8 @@ function topBar(auth: SpotifyAuth): HTMLElement {
   });
   const signOut = button('Sign out', { class: 'ghost' }, () => {
     signOutHere(auth);
-    tabLink?.signedOut();
   });
-  // A real new tab that arrives signed in with this tab's data (src/musicians-corner/handoff.ts).
-  const corner =
-    !isMusiciansRoute(route) &&
-    h(
-      'a',
-      {
-        class: 'button ghost corner-link',
-        href: tabLink ? handoffHref(tabLink.offer(), musiciansHref(false)) : `/${musiciansHref(false)}`,
-        target: '_blank',
-        rel: 'noopener noreferrer',
-        title: 'Key playlists with capo hints, chords and play links (opens in a new tab)',
-      },
-      'Musicians Corner ',
-      h('span', { 'aria-hidden': 'true' }, '↗'),
-      h('span', { class: 'visually-hidden' }, '(opens in a new tab)'),
-    );
-  return h('header', { class: 'topbar' }, brand(), h('div', { class: 'actions' }, corner, themeToggle(), refresh, signOut));
+  return h('header', { class: 'topbar' }, brand(), h('div', { class: 'actions' }, themeToggle(), refresh, signOut));
 }
 
 function hero(state: CuratorState, result: CurationResult): HTMLElement {
@@ -1254,10 +1208,10 @@ const DATA_SOURCES: DataSource[] = [
   },
   {
     icon: 'note',
-    name: 'Ultimate Guitar',
-    url: 'https://www.ultimate-guitar.com',
-    gives: 'Nothing to this page: Chords ↗ in the Musicians Corner opens its chord search in a new tab.',
-    receives: 'Only when you click Chords ↗: that song’s artist and title, in the search address.',
+    name: 'Google Search',
+    url: 'https://www.google.com',
+    gives: 'Nothing to this page: Chords ↗ next to a song on a playlist page opens a Google search for its chords in a new tab.',
+    receives: 'Only when you click Chords ↗: that song’s title and artist, in the search address.',
   },
 ];
 
@@ -1444,7 +1398,8 @@ const SORT_LABEL: Record<SortOrder, string> = {
   tracks: 'Most tracks',
 };
 
-const SIZE_OPTIONS = [25, 50, 100];
+/** Suggestions show at most PART_SIZE (25) songs, so the size filter stops there. */
+const SIZE_OPTIONS = [10, 20, 25];
 
 /** Sort and filter toolbar of the recommendations grid: it narrows what is shown and never curates. */
 function browseBar(state: CuratorState, onChange: () => void): { el: HTMLElement; setItems: (items: Browsable[]) => void; clear: () => void } {
@@ -1882,7 +1837,21 @@ function builtControls(built: BuiltState, onRetry: () => void): HTMLElement {
 // ---------------------------------------------------------------------------
 // Playlist cards
 
-function playlistCard(client: SpotifyClient, p: CuratedPlaylist, facets: Browsable['facets'], kept: boolean, saved?: SavedMatch): HTMLElement {
+/** The next part of a suggestion, and how to reveal it. */
+interface NextPart {
+  next: CuratedPlaylist;
+  left: number;
+  reveal: () => void;
+}
+
+function playlistCard(
+  client: SpotifyClient,
+  p: CuratedPlaylist,
+  facets: Browsable['facets'],
+  kept: boolean,
+  saved?: SavedMatch,
+  next?: NextPart,
+): HTMLElement {
   // The title link covers the whole card (see .card-link in style.css); the create controls sit above it.
   const link = h('a', { class: 'card-link', href: playlistHref(p.key) }, p.name);
   link.addEventListener('click', rememberHomeScroll);
@@ -1911,13 +1880,26 @@ function playlistCard(client: SpotifyClient, p: CuratedPlaylist, facets: Browsab
       trackList(p.tracks.slice(0, PREVIEW_COUNT)),
       h('span', { class: 'open-hint', 'aria-hidden': 'true' }, more > 0 ? `See all ${p.tracks.length} tracks →` : 'Open playlist →'),
       createControls(client, p, saved),
+      next && moreButton(next, next.reveal),
     ),
   );
 }
 
 /** What a card shows, so an unchanged card can stay on the page as it is. */
-function cardSignature(p: CuratedPlaylist, facets: Browsable['facets'], kept: boolean, saved: SavedMatch | undefined): string {
-  return JSON.stringify([trackSignature(p), p.name, p.reason, kept, saved?.playlist.id, facets.decade, facets.genres.slice(0, 3), facets.keys[0]?.id]);
+function cardSignature(p: CuratedPlaylist, facets: Browsable['facets'], kept: boolean, saved: SavedMatch | undefined, next?: { next: CuratedPlaylist; left: number }): string {
+  return JSON.stringify([trackSignature(p), p.name, p.reason, kept, saved?.playlist.id, facets.decade, facets.genres.slice(0, 3), facets.keys[0]?.id, next?.next.key, next?.left]);
+}
+
+/** "More like this": reveals the suggestion's next part as a playlist of its own. */
+function moreButton(next: { next: CuratedPlaylist; left: number }, onClick: () => void): HTMLElement {
+  const n = next.next.tracks.length;
+  const later = next.left > 1 ? ` · ${next.left - 1} more after it` : '';
+  return h(
+    'div',
+    { class: 'more-like-this' },
+    button('More like this', { class: 'ghost small', 'aria-label': `More like this: show ${next.next.name}, ${n} more songs` }, onClick),
+    h('span', { class: 'muted small' }, `${next.next.part ? `Part ${next.next.part.number}` : next.next.name} · ${n} songs${later}`),
+  );
 }
 
 /** Makes `els` the children of `parent` in order, leaving children already in place untouched. */
@@ -1972,13 +1954,11 @@ function playlistPage(
   editing: TrackEditing & { removed: LikedTrack[] },
   onBack: () => void,
   extra?: HTMLElement | false,
-  /** Extra track columns and Back label, for the Musicians Corner's version of the page. */
-  variant?: { columns: TrackColumn[]; backLabel: string },
 ): HTMLElement {
   return h(
     'article',
-    { class: `playlist-page${variant ? ' corner-playlist' : ''}`, 'aria-labelledby': 'playlist-title' },
-    backButton(onBack, variant?.backLabel ?? (p.kind === 'custom' ? 'Back to Build your own' : undefined)),
+    { class: 'playlist-page', 'aria-labelledby': 'playlist-title' },
+    backButton(onBack, p.kind === 'custom' ? 'Back to Build your own' : undefined),
     h(
       'header',
       { class: 'playlist-hero' },
@@ -2001,7 +1981,7 @@ function playlistPage(
       ),
     ),
     p.tracks.length > 0
-      ? trackTable(p.tracks, known, editing.remove, variant?.columns)
+      ? trackTable(p.tracks, known, editing.remove)
       : h('p', { class: 'muted empty' }, 'You removed every track from this playlist. Restore some below to create it.'),
     editing.removed.length > 0 && removedTracks(editing),
   );
@@ -2033,7 +2013,7 @@ function removedTracks(editing: TrackEditing & { removed: LikedTrack[] }): HTMLE
   );
 }
 
-function missingPlaylistPage(state: CuratorState, onBack: () => void, built: boolean, musician = false): HTMLElement {
+function missingPlaylistPage(state: CuratorState, onBack: () => void, built: boolean): HTMLElement {
   if (built) {
     return h(
       'section',
@@ -2051,7 +2031,7 @@ function missingPlaylistPage(state: CuratorState, onBack: () => void, built: boo
   return h(
     'section',
     { class: 'playlist-page' },
-    backButton(onBack, musician ? 'Back to Musicians Corner' : undefined),
+    backButton(onBack),
     h(
       'div',
       { class: 'panel missing' },
@@ -2071,15 +2051,16 @@ function trackTable(
   tracks: LikedTrack[],
   known: { artistGenres: Record<string, string[]>; trackKeys: Record<string, TrackKey | null> },
   onRemove: (t: LikedTrack) => void,
-  columns: TrackColumn[] = [],
 ): HTMLElement {
   const rows = tracks.map((t) => {
     const key = known.trackKeys[t.id];
+    const genres = trackGenres(t, known.artistGenres);
     return {
       t,
       year: releaseYear(t),
       key: key ? `${keyName(key)} · ${camelot(key)}` : '',
-      genres: [...trackGenres(t, known.artistGenres)].slice(0, 2).join(', '),
+      genres: [...genres].slice(0, 2).join(', '),
+      chords: showChordsLink(genres),
     };
   });
   const hasKey = rows.some((r) => r.key);
@@ -2100,14 +2081,14 @@ function trackTable(
         h('th', { class: 'col-year', scope: 'col' }, 'Year'),
         hasKey && h('th', { class: 'col-key', scope: 'col' }, 'Key'),
         hasGenre && h('th', { class: 'col-genre', scope: 'col' }, 'Genre'),
-        ...columns.map((c) => h('th', { class: c.cls, scope: 'col' }, c.header)),
+        h('th', { class: 'col-chords', scope: 'col' }, h('span', { class: 'visually-hidden' }, 'Chords')),
         h('th', { class: 'col-remove' }, h('span', { class: 'visually-hidden' }, 'Remove')),
       ),
     ),
     h(
       'tbody',
       {},
-      ...rows.map(({ t, year, key, genres }, i) =>
+      ...rows.map(({ t, year, key, genres, chords }, i) =>
         h(
           'tr',
           {},
@@ -2130,7 +2111,7 @@ function trackTable(
           cell('col-year', year === null ? '' : String(year)),
           hasKey && cell('col-key', key),
           hasGenre && cell('col-genre', genres),
-          ...columns.map((c) => cell(c.cls, c.cell(t))),
+          cell('col-chords', chords && chordsLink(t)),
           cell(
             'col-remove',
             button(icon('close'), { class: 'icon-button remove', 'data-remove': t.id, 'aria-label': `Remove ${t.name} from this playlist`, title: 'Remove from this playlist' }, () =>
@@ -2141,6 +2122,12 @@ function trackTable(
       ),
     ),
   );
+}
+
+/** A Google search for the song's chords, in a new tab (see src/chords.ts). */
+function chordsLink(t: LikedTrack): HTMLElement {
+  const label = `Search Google for the chords of ${t.name} (opens in a new tab)`;
+  return h('a', { class: 'button ghost small chords-link', href: chordsUrl(t), target: '_blank', rel: 'noopener noreferrer', 'aria-label': label, title: label }, 'Chords ↗');
 }
 
 /** Album-art mosaic: four different covers when there are four, else the first cover. */

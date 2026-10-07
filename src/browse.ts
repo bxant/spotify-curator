@@ -3,6 +3,7 @@
 // genres and keys, and the page sorts and filters on those. No DOM or network here.
 
 import { camelot, keyName, releaseYear, trackGenres } from './curate';
+import { seriesKey } from './parts';
 import type { CuratedPlaylist, PlaylistKind, TrackKey } from './types';
 
 /** A decade, genre or key describes a playlist when at least this share of its tracks has it. */
@@ -37,7 +38,8 @@ export interface FacetInputs {
 
 export function playlistFacets(p: CuratedPlaylist, inputs: FacetInputs): PlaylistFacets {
   const n = p.tracks.length;
-  const [bucketKind, bucketValue] = splitKey(p.key);
+  // A part is described by the suggestion it was split from ("genre:rock", not "genre:rock|part:2").
+  const [bucketKind, bucketValue] = splitKey(seriesKey(p));
 
   const years = p.tracks.map(releaseYear).filter((y): y is number => y !== null).sort((a, b) => a - b);
   const median = years.length > 0 ? years[Math.floor((years.length - 1) / 2)] : null;

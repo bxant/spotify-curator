@@ -61,14 +61,23 @@ export function normalizeName(name: string): string {
   return decodeEntities(name).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-/** Shared tracks as a share of the larger playlist; a relinked track counts by name and artist. */
-export function trackOverlap(p: CuratedPlaylist, saved: SavedTracks): number {
-  const size = Math.max(p.tracks.length, saved.ids.length);
-  if (size === 0) return 0;
+/** Tracks of `p` that are in `saved`; a relinked track counts by name and artist. */
+function sharedTracks(p: CuratedPlaylist, saved: SavedTracks): number {
   const ids = new Set(saved.ids);
   const keys = new Set(saved.keys);
-  const shared = p.tracks.filter((t) => ids.has(t.id) || keys.has(trackKey(t.name, t.artists[0]?.id))).length;
-  return shared / size;
+  return p.tracks.filter((t) => ids.has(t.id) || keys.has(trackKey(t.name, t.artists[0]?.id))).length;
+}
+
+/** Shared tracks as a share of the larger playlist. */
+export function trackOverlap(p: CuratedPlaylist, saved: SavedTracks): number {
+  const size = Math.max(p.tracks.length, saved.ids.length);
+  return size === 0 ? 0 : sharedTracks(p, saved) / size;
+}
+
+/** The normalized name of the suggestion a later part was split from ("Rock" for "Rock - Part 2"). */
+function seriesName(p: CuratedPlaylist): string | undefined {
+  const suffix = p.part && p.part.number > 1 ? ` - Part ${p.part.number}` : '';
+  return suffix && p.name.endsWith(suffix) ? normalizeName(p.name.slice(0, -suffix.length)) : undefined;
 }
 
 /** False when the sizes alone rule out a match by tracks, so its tracks need not be fetched. */
@@ -83,7 +92,10 @@ function sizesAllowMatch(p: CuratedPlaylist, trackCount: number | undefined): bo
  * Finds the suggestions already saved among the user's own playlists. An app playlist
  * with the suggestion's name matches outright; otherwise a playlist with the same name,
  * or an app playlist renamed since, matches when at least `TRACK_OVERLAP_MIN` of the
- * tracks are shared. Tracks not in `tracks` yet are listed in `needTracks`.
+ * tracks are shared. A later part of a suggestion also matches an app playlist with the
+ * suggestion's own name that holds at least `TRACK_OVERLAP_MIN` of the part's tracks, as
+ * versions before parts saved the whole suggestion. Tracks not in `tracks` yet are listed
+ * in `needTracks`.
  */
 export function matchSaved(
   suggestions: CuratedPlaylist[],
@@ -112,6 +124,18 @@ export function matchSaved(
     const app = sameName.find((s) => s.tag === 'tagged') ?? sameName.find((s) => s.tag === 'legacy');
     if (app) {
       matches.set(p.key, { playlist: app.playlist, by: 'name' });
+      continue;
+    }
+    const series = seriesName(p);
+    const whole = info.find(({ playlist, name, tag }) => {
+      if (!tag || name !== series) return false;
+      if (playlist.trackCount !== undefined && playlist.trackCount < TRACK_OVERLAP_MIN * p.tracks.length) return false;
+      const t = tracks[playlist.id];
+      if (!t) need.add(playlist.id);
+      return !!t && sharedTracks(p, t) >= TRACK_OVERLAP_MIN * p.tracks.length;
+    });
+    if (whole) {
+      matches.set(p.key, { playlist: whole.playlist, by: 'tracks' });
       continue;
     }
     const hit = byTracks(p, sameName) ?? byTracks(p, renamed);

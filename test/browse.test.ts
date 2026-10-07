@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { browse, filterOptions, playlistFacets, type Browsable } from '../src/browse';
+import { splitParts } from '../src/parts';
 import type { CuratedPlaylist, LikedTrack, PlaylistKind, TrackKey } from '../src/types';
 import { track } from './fixtures/builders';
 
@@ -35,6 +36,15 @@ describe('playlistFacets', () => {
     expect(playlistFacets(playlist('artist:rockband', 'artist', list), inputs).artists[0].id).toBe('rockband');
     expect(playlistFacets(playlist('era:2010', 'era', list), inputs).decade).toBe(2010);
     expect(playlistFacets(playlist('key:0:1', 'key', list), inputs).keys[0]).toEqual({ id: '0:1', label: 'C major (8B)' });
+  });
+
+  it('describes a later part by the suggestion it was split from', () => {
+    const list = [...tracks('p', 25, 2012, 'popstar'), ...tracks('r', 25, 2012, 'rockband')];
+    const [, part2] = splitParts(playlist('genre:dance pop', 'genre', list));
+    expect(part2.key).toBe('genre:dance pop|part:2');
+    // Part 2 holds only rock songs, yet the suggestion's own genre still comes first.
+    expect(playlistFacets(part2, inputs).genres).toEqual(['dance pop', 'rock']);
+    expect(playlistFacets(part2, inputs).trackCount).toBe(25);
   });
 });
 
