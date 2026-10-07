@@ -1,8 +1,8 @@
 # spotify-curator
 
-A local web page that suggests playlists from your Spotify **Liked Songs** and creates the ones you pick as private playlists in your Spotify account. It is built for big libraries (thousands of liked songs) with lots of never-played likes and whole albums liked at once.
+A web page that suggests playlists from your Spotify **Liked Songs** and creates the ones you pick as private playlists in your Spotify account. It is built for big libraries (thousands of liked songs) with lots of never-played likes and whole albums liked at once.
 
-It runs only on your machine at http://127.0.0.1:8888, in a Spotify-style dark theme (a light theme is one click away). Nothing is saved to disk except your config: fetched library data stays in the browser tab's `sessionStorage` and is gone when you close the tab. Only the musical key and genre lookups (public data that is slow to redo, see [Data sources](#data-sources)) and your theme choice are kept in the browser's `localStorage`; **Sign out** clears the lookups.
+It runs on your machine at http://127.0.0.1:8888 or as a free static site (see [Hosting](#hosting)), in a Spotify-style dark theme (a light theme is one click away). Nothing is saved to disk except your config: fetched library data stays in the browser tab's `sessionStorage` and is gone when you close the tab. Only the musical key and genre lookups (public data that is slow to redo, see [Data sources](#data-sources)) and your theme choice are kept in the browser's `localStorage`; **Sign out** clears the lookups.
 
 ## Suggested playlists
 
