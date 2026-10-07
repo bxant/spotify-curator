@@ -1,0 +1,2 @@
+# Cloudflare Pages: Spotify returns from sign-in to /callback, which is served by the app.
+/callback /index.html 200

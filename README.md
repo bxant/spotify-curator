@@ -1,8 +1,8 @@
 # spotify-curator
 
-A local web page that suggests playlists from your Spotify **Liked Songs** and creates the ones you pick as private playlists in your Spotify account. It is built for big libraries (thousands of liked songs) with lots of never-played likes and whole albums liked at once.
+A web page that suggests playlists from your Spotify **Liked Songs** and creates the ones you pick as private playlists in your Spotify account. It is built for big libraries (thousands of liked songs) with lots of never-played likes and whole albums liked at once.
 
-It runs only on your machine at http://127.0.0.1:8888, in a Spotify-style dark theme (a light theme is one click away). Nothing is saved to disk except your config: fetched library data stays in the browser tab's `sessionStorage` and is gone when you close the tab. Only the musical key and genre lookups (public data that is slow to redo, see [Data sources](#data-sources)) and your theme choice are kept in the browser's `localStorage`; **Sign out** clears the lookups.
+It runs on your machine at http://127.0.0.1:8888 or as a free static site (see [Hosting](#hosting)), in a Spotify-style dark theme (a light theme is one click away). Nothing is saved to disk except your config: fetched library data stays in the browser tab's `sessionStorage` and is gone when you close the tab. Only the musical key and genre lookups (public data that is slow to redo, see [Data sources](#data-sources)) and your theme choice are kept in the browser's `localStorage`; **Sign out** clears the lookups.
 
 ## Suggested playlists
 
@@ -88,6 +88,18 @@ npm start
 Then open http://127.0.0.1:8888 in your browser. On WSL2, the Windows browser reaches the WSL server through localhost forwarding. If you open `localhost:8888`, the page switches to `127.0.0.1` so sign-in works.
 
 Loading your library takes under a minute (~90 pages of liked songs). The playlists that need no extra data (favorites, rediscover, albums, artists, decades) show up right away, and musical keys and genres are then [looked up in the background](#background-lookups): key and genre playlists appear and fill in as results arrive, without moving the cards you are looking at. **Refresh data** refetches your likes and listening history; keys and genres are only looked up for songs and artists that are new since the last lookup.
+
+## Hosting
+
+The curator is a static site with no backend, so it can run on [Cloudflare Pages](https://pages.cloudflare.com/)' free plan. Sign-in redirects back to `/callback` on whichever origin serves the page, so the same build works locally and hosted; `public/_redirects` makes Pages serve the app at `/callback`. One-time steps for the owner:
+
+1. In the Cloudflare dashboard, go to **Workers & Pages → Create → Pages → Connect to Git**, authorize GitHub for this (private) repository, and pick the `main` branch.
+2. Build settings: framework preset **None**, build command `npm run build`, build output directory `dist`. Under **Environment variables (advanced)** add `NODE_VERSION` = `20.19.0` (or newer) and `VITE_SPOTIFY_CLIENT_ID` = your app's Client ID. The Client ID is read at build time, so after changing it, retry the latest deployment. Never commit it.
+3. Save and deploy. The site is at `https://<project>.pages.dev`, where `<project>` is the Pages project name.
+4. In the [Spotify developer dashboard](https://developer.spotify.com/dashboard), open the app's settings and add the redirect URI `https://<project>.pages.dev/callback` next to the existing `http://127.0.0.1:8888/callback`, then save.
+5. The app is in Development Mode, so only allowlisted Spotify accounts can sign in. Under the app's **User Management**, add each person's name and the email address of their Spotify account. Anyone else gets a sign-in error.
+
+Every push to `main` redeploys. Pull requests and other branches get preview URLs (`https://<branch>.<project>.pages.dev`), whose sign-in only works if that exact `/callback` URI is also registered in Spotify.
 
 ## Development
 

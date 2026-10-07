@@ -14,7 +14,7 @@ import {
   type BuildChoices,
   type BuildCriteria,
 } from './builder';
-import { REDIRECT_URI, configuredClientId } from './config';
+import { configuredClientId, redirectUri } from './config';
 import { ICONS, button, h, icon, type Child } from './dom';
 import {
   camelot,
@@ -201,8 +201,8 @@ async function start() {
   applyTheme(savedTheme());
   // The page restores the recommendations' scroll itself once they are drawn again.
   history.scrollRestoration = 'manual';
-  // Spotify only accepts the 127.0.0.1 redirect URI; keep the whole session on
-  // that origin so the PKCE verifier in sessionStorage is found on return.
+  // Locally Spotify only accepts the 127.0.0.1 redirect URI; keep the whole session
+  // on that origin so the PKCE verifier in sessionStorage is found on return.
   if (location.hostname === 'localhost') {
     location.replace(location.href.replace('//localhost', '//127.0.0.1'));
     return;
@@ -214,7 +214,15 @@ async function start() {
     return;
   }
 
-  const auth = new SpotifyAuth({ clientId, redirectUri: REDIRECT_URI, storage: sessionStorage });
+  const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel(CHANNEL_NAME);
+  const auth = new SpotifyAuth({
+    clientId,
+    redirectUri: redirectUri(location.origin),
+    storage: sessionStorage,
+    onTokenStored: (token, previous) => tabLink?.tokenStored(token, previous),
+  });
+  // Another tab signing out signs this one out too (see src/musicians-corner/handoff.ts).
+  if (channel) tabLink = new TabLink(channel, sessionStorage, () => auth.isSignedIn() && signOutHere(auth));
 
   if (location.pathname === '/callback') {
     const back = takeReturnHash();
@@ -293,10 +301,12 @@ function showSetup() {
         ', set ',
         h('code', {}, 'VITE_SPOTIFY_CLIENT_ID'),
         ' to your app’s Client ID, make sure ',
-        h('code', {}, REDIRECT_URI),
+        h('code', {}, redirectUri(location.origin)),
         ' is a registered redirect URI, then restart ',
         h('code', {}, 'npm start'),
-        '.',
+        '. On a hosted copy, set ',
+        h('code', {}, 'VITE_SPOTIFY_CLIENT_ID'),
+        ' in the host’s build settings and redeploy (see Hosting in the README).',
       ),
     ),
   );
