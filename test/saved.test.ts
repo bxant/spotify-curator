@@ -12,6 +12,7 @@ import {
   trackOverlap,
   type SavedMatch,
 } from '../src/saved';
+import { splitParts } from '../src/parts';
 import type { CuratedPlaylist, LikedTrack, PlaylistKind, SavedTracks } from '../src/types';
 import { track } from './fixtures/builders';
 import {
@@ -130,6 +131,22 @@ describe('matchSaved', () => {
       playlist: renamedApp,
       by: 'tracks',
     });
+  });
+
+  it('lets an app playlist saved whole, before parts, account for the later parts it holds', () => {
+    const all = songs('indie', 100);
+    const parts = splitParts(suggestion('genre:indie rock', 'Genre: Indie Rock', all));
+    const other = { ...parts[3], tracks: songs('other', 25) };
+    const asked = matchSaved([...parts.slice(0, 3), other], [taggedGenre], {});
+    expect(asked.needTracks).toEqual([taggedGenre.id]);
+    expect([...asked.matches.keys()]).toEqual(['genre:indie rock']);
+
+    const { matches } = matchSaved([...parts.slice(0, 3), other], [taggedGenre], { [taggedGenre.id]: tracksOf(all) });
+    expect([...matches.entries()].map(([key, m]) => [key, m.by])).toEqual([
+      ['genre:indie rock', 'name'],
+      ['genre:indie rock|part:2', 'tracks'],
+      ['genre:indie rock|part:3', 'tracks'],
+    ]);
   });
 
   it('never needs tracks for untagged playlists whose names match no suggestion', () => {

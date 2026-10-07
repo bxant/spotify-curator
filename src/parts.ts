@@ -108,8 +108,8 @@ export interface Suggestions {
 /**
  * The suggestions to show. Every part of each one is checked against the saved playlists
  * at once; one whose every part is saved is curated away (`curateExcluding` gets the keys
- * of those) so the next candidate takes its place. A kept snapshot stands for its whole
- * series, so the new curation's parts of it are left out and it offers no next part.
+ * of those) so the next candidate takes its place. A kept snapshot takes the place of the
+ * new part with its key, so no next part is offered from or to it.
  */
 export function showSuggestions(
   curateExcluding: (used: ReadonlySet<string>) => CuratedPlaylist[],
@@ -118,20 +118,20 @@ export function showSuggestions(
   findSaved: (playlists: CuratedPlaylist[], matched: ReadonlySet<string>) => Map<string, SavedMatch>,
   want?: string,
 ): Suggestions {
-  const keptSeries = new Set(kept.map(seriesKey));
   const used = new Set<string>();
-  const curated = () => curateExcluding(used).filter((p) => !keptSeries.has(p.key));
-  let series = curated();
+  let series = curateExcluding(used);
   const { saved } = setAsideSaved((exclude) => {
     const gone = showParts(series, {}, exclude).used;
     if ([...gone].some((key) => !used.has(key))) {
       for (const key of gone) used.add(key);
-      series = curated();
+      series = curateExcluding(used);
     }
     return withKept(kept, series.flatMap((p) => splitParts(p)));
   }, findSaved);
   const savedKeys = new Set(saved.map((s) => s.playlist.key));
   const shownRevealed = want ? revealUpTo(series, revealed, want, savedKeys) : revealed;
   const { shown, more } = showParts(series, shownRevealed, savedKeys);
+  const keptKeys = new Set(kept.map((p) => p.key));
+  for (const [key, { next }] of more) if (keptKeys.has(key) || keptKeys.has(next.key)) more.delete(key);
   return { fresh: withKept(kept, shown).filter((p) => !savedKeys.has(p.key)), saved, more, revealed: shownRevealed };
 }

@@ -94,16 +94,19 @@ describe('showSuggestions', () => {
     expect(saved).toHaveLength(4);
   });
 
-  it('lets a kept snapshot stand for its whole series, with no next part from the new curation', () => {
+  it('offers no next part from or to a kept snapshot, while the rest of its series stays reachable', () => {
     const kept = [splitParts(playlist('genre:rock', 30))[0]];
     const { fresh, more } = run([], { kept });
     expect(fresh[0]).toBe(kept[0]);
     expect(keys(fresh)).toEqual(['genre:rock', 'genre:jazz']);
     expect(more.size).toBe(0);
+    const linked = run([], { kept, want: 'genre:rock|part:3' });
+    expect(keys(linked.fresh)).toEqual(['genre:rock', 'genre:rock|part:2', 'genre:rock|part:3', 'genre:jazz']);
+    expect(linked.more.get('genre:rock|part:3')?.next.key).toBe('genre:rock|part:4');
 
     const keptPart2 = [splitParts(playlist('genre:rock', 60))[1]];
-    const later = run([], { kept: keptPart2, revealed: { 'genre:rock': 2 } });
-    expect(keys(later.fresh)).toEqual(['genre:rock|part:2', 'genre:jazz']);
+    const later = run([], { kept: keptPart2 });
+    expect(keys(later.fresh)).toEqual(['genre:rock|part:2', 'genre:rock', 'genre:jazz']);
     expect(later.fresh[0]).toBe(keptPart2[0]);
     expect(later.more.size).toBe(0);
   });
