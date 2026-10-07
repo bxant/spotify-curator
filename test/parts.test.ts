@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PART_SIZE, partKey, seriesKey, showParts, splitParts } from '../src/parts';
-import { setAsideSaved } from '../src/saved';
+import { PART_SIZE, partKey, seriesKey, showParts, showSuggestions, splitParts } from '../src/parts';
 import type { CuratedPlaylist } from '../src/types';
 import { track } from './fixtures/builders';
 
@@ -64,35 +63,60 @@ describe('showParts', () => {
   });
 });
 
-describe('parts with saved suggestions', () => {
-  // The page's loop (src/main.ts curateNow): saved parts are excluded, and a suggestion
+describe('showSuggestions', () => {
+  // As the page uses it (src/main.ts curateNow): saved parts are set aside, and a suggestion
   // whose every part is saved is curated away so the next candidate takes its place.
-  const candidates = [playlist('genre:rock', 50), playlist('genre:jazz', 20), playlist('genre:folk', 20)];
-  const curateTwo = (drop: ReadonlySet<string>) => candidates.filter((p) => !drop.has(p.key)).slice(0, 2);
-  const run = (savedKeys: string[]) => {
-    const used = new Set<string>();
-    return setAsideSaved(
-      (exclude) => {
-        let parts = showParts(curateTwo(used), {}, exclude);
-        if ([...parts.used].some((k) => !used.has(k))) {
-          for (const k of parts.used) used.add(k);
-          parts = showParts(curateTwo(used), {}, exclude);
-        }
-        return parts.shown;
-      },
-      (shown) => new Map(shown.filter((p) => savedKeys.includes(p.key)).map((p) => [p.key, { playlist: { id: p.key, name: p.name, description: '', uri: '', url: '' }, by: 'name' as const }])),
-    );
-  };
+  const candidates = [playlist('genre:rock', 100), playlist('genre:jazz', 20), playlist('genre:folk', 20)];
+  const curateTwo = (used: ReadonlySet<string>) => candidates.filter((p) => !used.has(p.key)).slice(0, 2);
+  const findSaved = (savedKeys: string[]) => (playlists: CuratedPlaylist[]) =>
+    new Map(playlists.filter((p) => savedKeys.includes(p.key)).map((p) => [p.key, { playlist: { id: p.key, name: p.name, description: '', uri: '', url: '' }, by: 'name' as const }]));
+  const run = (savedKeys: string[], options: { kept?: CuratedPlaylist[]; revealed?: Record<string, number>; want?: string } = {}) =>
+    showSuggestions(curateTwo, options.kept ?? [], options.revealed ?? {}, findSaved(savedKeys), options.want);
+  const keys = (list: CuratedPlaylist[]) => list.map((p) => p.key);
 
   it('offers part 2 in place of a saved part 1', () => {
-    const { fresh, saved } = run(['genre:rock']);
-    expect(fresh.map((p) => p.key)).toEqual(['genre:rock|part:2', 'genre:jazz']);
+    const { fresh, saved, more } = run(['genre:rock']);
+    expect(keys(fresh)).toEqual(['genre:rock|part:2', 'genre:jazz']);
     expect(saved.map((s) => s.playlist.key)).toEqual(['genre:rock']);
+    expect(more.get('genre:rock|part:2')?.next.key).toBe('genre:rock|part:3');
   });
 
-  it('offers the next suggestion once every part is saved', () => {
-    const { fresh, saved } = run(['genre:rock', 'genre:rock|part:2']);
-    expect(fresh.map((p) => p.key)).toEqual(['genre:jazz', 'genre:folk']);
-    expect(saved.map((s) => s.playlist.key)).toEqual(['genre:rock', 'genre:rock|part:2']);
+  it('finds saved parts that are not revealed yet, so the next part offered skips them', () => {
+    const { fresh, saved, more } = run(['genre:rock|part:2']);
+    expect(keys(fresh)).toEqual(['genre:rock', 'genre:jazz']);
+    expect(saved.map((s) => s.playlist.key)).toEqual(['genre:rock|part:2']);
+    expect(more.get('genre:rock')?.next.key).toBe('genre:rock|part:3');
+  });
+
+  it('offers the next suggestion once every part is saved, however many parts there are', () => {
+    const { fresh, saved } = run(['genre:rock', 'genre:rock|part:2', 'genre:rock|part:3', 'genre:rock|part:4']);
+    expect(keys(fresh)).toEqual(['genre:jazz', 'genre:folk']);
+    expect(saved).toHaveLength(4);
+  });
+
+  it('lets a kept snapshot stand for its whole series, with no next part from the new curation', () => {
+    const kept = [splitParts(playlist('genre:rock', 30))[0]];
+    const { fresh, more } = run([], { kept });
+    expect(fresh[0]).toBe(kept[0]);
+    expect(keys(fresh)).toEqual(['genre:rock', 'genre:jazz']);
+    expect(more.size).toBe(0);
+
+    const keptPart2 = [splitParts(playlist('genre:rock', 60))[1]];
+    const later = run([], { kept: keptPart2, revealed: { 'genre:rock': 2 } });
+    expect(keys(later.fresh)).toEqual(['genre:rock|part:2', 'genre:jazz']);
+    expect(later.fresh[0]).toBe(keptPart2[0]);
+    expect(later.more.size).toBe(0);
+  });
+
+  it('reveals a series up to a wanted part, such as one opened from a link', () => {
+    const revealed = { 'genre:jazz': 1 };
+    const opened = run([], { revealed, want: 'genre:rock|part:3' });
+    expect(opened.revealed).toEqual({ 'genre:jazz': 1, 'genre:rock': 3 });
+    expect(keys(opened.fresh)).toEqual(['genre:rock', 'genre:rock|part:2', 'genre:rock|part:3', 'genre:jazz']);
+
+    // Saved parts do not count, and a part already shown or not curated leaves it as it is.
+    expect(run(['genre:rock'], { want: 'genre:rock|part:3' }).revealed).toEqual({ 'genre:rock': 2 });
+    expect(run([], { revealed, want: 'genre:rock' }).revealed).toBe(revealed);
+    expect(run([], { revealed, want: 'genre:rock|part:9' }).revealed).toBe(revealed);
   });
 });

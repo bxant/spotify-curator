@@ -5,6 +5,7 @@
 // Pure: no DOM or history access here.
 
 import { KIND_ORDER, type BrowseCriteria, type SortOrder } from './browse';
+import { PART_SIZE } from './parts';
 import type { PlaylistKind } from './types';
 
 export type Route = { name: 'home'; criteria: BrowseCriteria } | { name: 'playlist'; key: string };
@@ -70,7 +71,7 @@ function criteriaFromQuery(q: URLSearchParams): BrowseCriteria {
   const artist = q.get('artist');
   if (artist) c.artist = artist;
   const size = q.get('size');
-  if (size && /^[1-9]\d{0,3}$/.test(size)) c.minTracks = Number(size);
+  if (size && /^[1-9]\d?$/.test(size) && Number(size) <= PART_SIZE) c.minTracks = Number(size);
   return c;
 }
 

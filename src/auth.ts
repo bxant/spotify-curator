@@ -15,7 +15,7 @@ export const SCOPES = [
 
 const VERIFIER_KEY = 'curator.pkce.verifier';
 const STATE_KEY = 'curator.pkce.state';
-/** Where the signed-in token lives in the tab's storage (shared with other tabs by src/musicians-corner/handoff.ts). */
+/** Where the signed-in token lives in the tab's storage. */
 export const TOKEN_KEY = 'curator.token';
 /** Refresh this long before the access token actually expires. */
 const EXPIRY_MARGIN_MS = 60_000;

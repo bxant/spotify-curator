@@ -18,6 +18,8 @@ describe('parseRoute', () => {
       name: 'home',
       criteria: { sort: 'recommended' },
     });
+    // Suggestions have at most 25 songs, so an older link's larger size would hide them all.
+    expect(parseRoute('#/?size=50')).toEqual({ name: 'home', criteria: { sort: 'recommended' } });
     expect(parseRoute('#/playlist/%E0%A4%A')).toEqual({ name: 'home', criteria: { sort: 'recommended' } });
   });
 });
@@ -46,10 +48,10 @@ describe('browse state in the address', () => {
       genre: 'indie rock',
       key: '9:0',
       artist: '4Z8W4fKeB5YxbusRsdQVPb',
-      minTracks: 50,
+      minTracks: 20,
     };
     const home = homeHref(criteria);
-    expect(home).toBe('#/?sort=decade&type=genre&decade=1990&genre=indie+rock&key=9%3A0&artist=4Z8W4fKeB5YxbusRsdQVPb&size=50');
+    expect(home).toBe('#/?sort=decade&type=genre&decade=1990&genre=indie+rock&key=9%3A0&artist=4Z8W4fKeB5YxbusRsdQVPb&size=20');
 
     // Opening a playlist and going back lands on the same address, so the same view.
     const page = parseRoute(playlistHref('genre:indie rock'));

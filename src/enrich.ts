@@ -105,7 +105,7 @@ export function openGenres(data: EnrichmentData): Record<string, string[]> {
 
 /**
  * Adds results another tab saved to the shared lookup cache while this tab waited for its
- * turn (see src/musicians-corner/shared-lookups.ts); what this tab already has is kept.
+ * turn (see src/shared-lookups.ts); what this tab already has is kept.
  */
 export function mergeEnrichment(data: EnrichmentData, saved: EnrichmentData): void {
   data.keys = { ...saved.keys, ...data.keys };

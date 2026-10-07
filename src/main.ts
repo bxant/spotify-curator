@@ -26,7 +26,6 @@ import {
   releaseYear,
   trackGenres,
   trackSignature,
-  withKept,
   type CurationResult,
 } from './curate';
 import {
@@ -44,12 +43,12 @@ import { loadLibrary, type LibrarySnapshot } from './library';
 import { MusicBrainzClient } from './musicbrainz';
 import { mapWithConcurrency } from './http';
 import { ReccoBeatsClient } from './reccobeats';
-import { showParts, seriesKey } from './parts';
+import { seriesKey, showSuggestions } from './parts';
 import { formatRoute, homeHref, parentRoute, parseRoute, playlistHref, type Route } from './route';
 import { CACHE_PREFIX, SessionCache, browserCache } from './session-cache';
 import { CreatedStore } from './created-store';
 import { RemovedStore } from './removed-store';
-import { APP_TAG, matchSaved, playlistDescription, setAsideSaved, type SavedMatch } from './saved';
+import { APP_TAG, matchSaved, playlistDescription, type SavedMatch } from './saved';
 import { SpotifyClient, type CreatedPlaylist } from './spotify';
 import type { CuratedPlaylist, LikedTrack, PlaylistKind, SavedPlaylist, SavedTracks, TrackKey } from './types';
 import { WikidataClient } from './wikidata';
@@ -546,7 +545,7 @@ function createCuratorView(
 ) {
   const dock = statusDock(actions);
 
-  const curateNow = () => {
+  const curateNow = (want?: string) => {
     const { enrich, curatedKeys } = state;
     const open = openGenres(enrich);
     const options = {
@@ -559,23 +558,17 @@ function createCuratorView(
     let result = curate(state.library.liked, state.library.history, options);
     const savedList = savedPlaylists(state);
     const needTracks = new Set<string>();
-    /** Suggestions every part of which is saved: curated again without them, so others take their place. */
-    const used = new Set<string>();
-    let parts = showParts(result.playlists, state.revealed);
     // Suggestions are shown in parts of 25 (src/parts.ts). A saved part is set aside and
     // the suggestion's next part fills in; once every part is saved, the next candidate
     // does. A card created from this page keeps showing its own Open links instead.
     // Matching and Create both see the tracks as shown, without the ones the owner removed.
-    const { fresh, saved } = setAsideSaved(
-      (exclude) => {
-        parts = showParts(result.playlists, state.revealed, exclude);
-        if ([...parts.used].some((key) => !used.has(key))) {
-          for (const key of parts.used) used.add(key);
-          result = curate(state.library.liked, state.library.history, { ...options, exclude: used });
-          parts = showParts(result.playlists, state.revealed, exclude);
-        }
-        return withKept(state.kept, parts.shown);
+    const { fresh, saved, more, revealed } = showSuggestions(
+      (used) => {
+        if (used.size > 0) result = curate(state.library.liked, state.library.history, { ...options, exclude: used });
+        return result.playlists;
       },
+      state.kept,
+      state.revealed,
       (playlists, matched) => {
         const check = matchSaved(
           playlists.filter((p) => !createdStore.hasRecord(p.key)).map((p) => removedStore.apply(p)),
@@ -585,6 +578,7 @@ function createCuratorView(
         for (const id of check.needTracks) needTracks.add(id);
         return check.matches;
       },
+      want,
     );
     /** As curated (kept suggestions carry these, so a removal can still be undone after a new set). */
     const curated = [...fresh, ...saved.map((s) => s.playlist)];
@@ -601,7 +595,8 @@ function createCuratorView(
       savedItems: saved.map((s) => browsable(removedStore.apply(s.playlist))),
       savedMatches: new Map(saved.map((s) => [s.playlist.key, s.match])),
       /** The next part of a suggestion, keyed by the last part of it on show. */
-      more: parts.more,
+      more,
+      revealed,
       needTracks,
       artistGenres,
       keptKeys: new Set(state.kept.map((p) => p.key)),
@@ -848,7 +843,12 @@ function createCuratorView(
   const renderPlaylist = (key: string) => {
     const isBuilt = key === BUILT_KEY;
     const find = () => {
-      const cur = curateNow();
+      const cur = curateNow(isBuilt ? undefined : key);
+      // A link to a part not revealed yet (e.g. from another session) reveals it.
+      if (cur.revealed !== state.revealed) {
+        state.revealed = { ...cur.revealed };
+        saveSet();
+      }
       const built = isBuilt ? state.build.built : undefined;
       // Saved recommendations keep their page even while hidden from the grid.
       const builtPlaylist = built && removedStore.apply(built.playlist);
