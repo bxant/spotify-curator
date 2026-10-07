@@ -214,15 +214,11 @@ async function start() {
     return;
   }
 
-  const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel(CHANNEL_NAME);
   const auth = new SpotifyAuth({
     clientId,
     redirectUri: redirectUri(location.origin),
     storage: sessionStorage,
-    onTokenStored: (token, previous) => tabLink?.tokenStored(token, previous),
   });
-  // Another tab signing out signs this one out too (see src/musicians-corner/handoff.ts).
-  if (channel) tabLink = new TabLink(channel, sessionStorage, () => auth.isSignedIn() && signOutHere(auth));
 
   if (location.pathname === '/callback') {
     const back = takeReturnHash();
