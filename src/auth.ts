@@ -26,8 +26,6 @@ export interface AuthConfig {
   storage: Storage;
   fetch?: typeof fetch;
   now?: () => number;
-  /** Called after a new token is stored, with the one it replaced. */
-  onTokenStored?: (token: StoredToken, previous: StoredToken | null) => void;
 }
 
 export interface StoredToken {
@@ -188,7 +186,6 @@ export class SpotifyAuth {
       scope: json.scope ?? previous?.scope,
     };
     this.config.storage.setItem(TOKEN_KEY, JSON.stringify(token));
-    this.config.onTokenStored?.(token, previous);
     return token.accessToken;
   }
 

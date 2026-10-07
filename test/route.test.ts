@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BrowseCriteria } from '../src/browse';
-import { formatRoute, homeHref, isMusiciansRoute, musiciansHref, musiciansPlaylistHref, parentRoute, parseRoute, playlistHref } from '../src/route';
+import { formatRoute, homeHref, parentRoute, parseRoute, playlistHref } from '../src/route';
 
 describe('parseRoute', () => {
   it('treats an empty or unknown hash as the recommendations with default sort', () => {
@@ -71,34 +71,23 @@ describe('browse state in the address', () => {
   });
 });
 
-describe('Musicians Corner routes', () => {
-  it('opens the corner, with or without the easy-keys filter', () => {
-    expect(parseRoute('#/musicians')).toEqual({ name: 'musicians', easy: false });
-    expect(parseRoute('#/musicians?easy=1')).toEqual({ name: 'musicians', easy: true });
-    expect(parseRoute('#/musicians?easy=yes')).toEqual({ name: 'musicians', easy: false });
-    expect(musiciansHref(false)).toBe('#/musicians');
-    expect(musiciansHref(true)).toBe('#/musicians?easy=1');
-    // Not a prefix match: other paths stay the recommendations.
-    expect(parseRoute('#/musiciansx').name).toBe('home');
-  });
-
-  it('round-trips corner playlist pages, keeping the filter for the way back', () => {
-    for (const key of ['key:9:0', 'key:10:1', 'genre:r/b ?#']) {
-      for (const easy of [false, true]) {
-        const href = musiciansPlaylistHref(key, easy);
-        expect(parseRoute(href)).toEqual({ name: 'musicians-playlist', key, easy });
-        expect(formatRoute(parseRoute(href))).toBe(href);
-      }
+describe('playlist pages', () => {
+  it('round-trips part keys', () => {
+    for (const key of ['genre:rock|part:2', 'artist:abc|part:4']) {
+      expect(parseRoute(playlistHref(key))).toEqual({ name: 'playlist', key });
+      expect(formatRoute(parseRoute(playlistHref(key)))).toBe(playlistHref(key));
     }
-    expect(parseRoute('#/musicians/playlist/').name).toBe('home');
   });
 
-  it('sends Back from a playlist page to the page it belongs to', () => {
+  it('sends Back from a playlist page to the recommendations, keeping their criteria', () => {
     const criteria = { sort: 'decade' as const };
     expect(parentRoute(parseRoute('#/playlist/key:9:0'), criteria)).toEqual({ name: 'home', criteria });
-    expect(parentRoute(parseRoute('#/musicians/playlist/key:9:0?easy=1'), criteria)).toEqual({ name: 'musicians', easy: true });
-    expect(parentRoute(parseRoute('#/musicians'), criteria)).toBeNull();
-    expect(isMusiciansRoute(parseRoute('#/musicians/playlist/key:9:0'))).toBe(true);
-    expect(isMusiciansRoute(parseRoute('#/playlist/key:9:0'))).toBe(false);
+    expect(parentRoute(parseRoute('#/'), criteria)).toBeNull();
+  });
+
+  it('opens the recommendations for links to the removed Musicians Corner', () => {
+    for (const hash of ['#/musicians', '#/musicians?easy=1', '#/musicians/playlist/key:9:0']) {
+      expect(parseRoute(hash)).toEqual({ name: 'home', criteria: { sort: 'recommended' } });
+    }
   });
 });

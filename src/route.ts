@@ -1,36 +1,19 @@
 // Hash routes for the page, so back/forward and reload work without a server:
 //   #/                            the recommendations, sorted and filtered as the owner left them
 //   #/?sort=decade&genre=rock     (sort and filters live in the query so they survive a reload)
-//   #/playlist/<key>              one recommended playlist on its own page
-//   #/musicians                   the Musicians Corner: key playlists to play along to
-//   #/musicians?easy=1            … only those in easy guitar keys
-//   #/musicians/playlist/<key>    one of them on its own page, with chords and play links
+//   #/playlist/<key>              one recommended playlist (or part of one) on its own page
 // Pure: no DOM or history access here.
 
 import { KIND_ORDER, type BrowseCriteria, type SortOrder } from './browse';
 import type { PlaylistKind } from './types';
 
-export type Route =
-  | { name: 'home'; criteria: BrowseCriteria }
-  | { name: 'playlist'; key: string }
-  | { name: 'musicians'; easy: boolean }
-  | { name: 'musicians-playlist'; key: string; easy: boolean };
+export type Route = { name: 'home'; criteria: BrowseCriteria } | { name: 'playlist'; key: string };
 
 export const SORT_ORDERS: readonly SortOrder[] = ['recommended', 'type', 'decade', 'genre', 'key', 'artist', 'tracks'];
 
 const PLAYLIST_PREFIX = '#/playlist/';
-const MUSICIANS = '#/musicians';
-const MUSICIANS_PLAYLIST_PREFIX = '#/musicians/playlist/';
 
 export function parseRoute(hash: string): Route {
-  if (hash.startsWith(MUSICIANS_PLAYLIST_PREFIX)) {
-    const [path, query = ''] = hash.slice(MUSICIANS_PLAYLIST_PREFIX.length).split('?');
-    const key = safeDecode(path);
-    if (key) return { name: 'musicians-playlist', key, easy: easyFromQuery(query) };
-  }
-  if (hash === MUSICIANS || hash.startsWith(`${MUSICIANS}?`)) {
-    return { name: 'musicians', easy: easyFromQuery(hash.slice(MUSICIANS.length + 1)) };
-  }
   if (hash.startsWith(PLAYLIST_PREFIX)) {
     const key = safeDecode(hash.slice(PLAYLIST_PREFIX.length));
     if (key) return { name: 'playlist', key };
@@ -41,8 +24,6 @@ export function parseRoute(hash: string): Route {
 
 export function formatRoute(route: Route): string {
   if (route.name === 'playlist') return PLAYLIST_PREFIX + encodeURIComponent(route.key);
-  if (route.name === 'musicians') return MUSICIANS + easyQuery(route.easy);
-  if (route.name === 'musicians-playlist') return MUSICIANS_PLAYLIST_PREFIX + encodeURIComponent(route.key) + easyQuery(route.easy);
   const query = criteriaToQuery(route.criteria).toString();
   return query ? `#/?${query}` : '#/';
 }
@@ -55,32 +36,9 @@ export function homeHref(criteria: BrowseCriteria): string {
   return formatRoute({ name: 'home', criteria });
 }
 
-export function musiciansHref(easy: boolean): string {
-  return formatRoute({ name: 'musicians', easy });
-}
-
-export function musiciansPlaylistHref(key: string, easy: boolean): string {
-  return formatRoute({ name: 'musicians-playlist', key, easy });
-}
-
 /** The page a page's Back button returns to. */
 export function parentRoute(route: Route, criteria: BrowseCriteria): Route | null {
-  if (route.name === 'playlist') return { name: 'home', criteria };
-  if (route.name === 'musicians-playlist') return { name: 'musicians', easy: route.easy };
-  return null;
-}
-
-/** Whether a route belongs to the Musicians Corner. */
-export function isMusiciansRoute(route: Route): boolean {
-  return route.name === 'musicians' || route.name === 'musicians-playlist';
-}
-
-function easyQuery(easy: boolean): string {
-  return easy ? '?easy=1' : '';
-}
-
-function easyFromQuery(query: string): boolean {
-  return new URLSearchParams(query).get('easy') === '1';
+  return route.name === 'playlist' ? { name: 'home', criteria } : null;
 }
 
 /** Only set, valid criteria are written, in a fixed order, so equal criteria give equal URLs. */

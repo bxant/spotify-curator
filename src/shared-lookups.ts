@@ -1,5 +1,5 @@
-// Key and genre lookups across tabs. With the Musicians Corner open next to the curator,
-// two tabs would otherwise look up the same songs at once and double the request rate the
+// Key and genre lookups across tabs. With the curator signed in in two tabs, both would
+// otherwise look up the same songs at once and double the request rate the
 // outside services allow (MusicBrainz asks for one request a second). A Web Lock lets one
 // tab at a time run the lookups; a tab waiting its turn picks up the results the running
 // tab saves to the shared (localStorage) lookup cache, through `storage` events, and finds
