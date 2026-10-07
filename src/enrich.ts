@@ -103,6 +103,23 @@ export function openGenres(data: EnrichmentData): Record<string, string[]> {
   return genres;
 }
 
+/**
+ * Adds results another tab saved to the shared lookup cache while this tab waited for its
+ * turn (see src/musicians-corner/shared-lookups.ts); what this tab already has is kept.
+ */
+export function mergeEnrichment(data: EnrichmentData, saved: EnrichmentData): void {
+  data.keys = { ...saved.keys, ...data.keys };
+  data.spotify = { ...saved.spotify, ...data.spotify };
+  data.wikidata = { ...saved.wikidata, ...data.wikidata };
+  data.musicBrainz = { ...saved.musicBrainz, ...data.musicBrainz };
+  data.genreNames ??= saved.genreNames;
+}
+
+/** Whether the key lookup has answered (with a key or null) for every liked song. */
+export function keysCovered(liked: LikedTrack[], keys: Record<string, TrackKey | null>): boolean {
+  return liked.every((t) => t.id in keys);
+}
+
 /** Whether any source has genres for the artist. */
 export function genresFound(data: EnrichmentData, index: GenreIndex | null, artistId: string): boolean {
   if ((data.spotify[artistId]?.length ?? 0) > 0) return true;

@@ -93,6 +93,31 @@ describe('SpotifyAuth', () => {
     expect(new URLSearchParams(calls[2].body).get('refresh_token')).toBe('rt');
   });
 
+  it('reports each stored token with the one it replaced, for other tabs to follow', async () => {
+    let n = 0;
+    const stored: [string, string | undefined][] = [];
+    const storage = new MemoryStorage();
+    const fake = fakeFetch(() =>
+      n++ === 0 ? json({ access_token: 'at', refresh_token: 'rt', expires_in: 3600 }) : json({ access_token: 'at2', refresh_token: 'rt2', expires_in: 3600 }),
+    );
+    let now = 1_000_000;
+    const auth = new SpotifyAuth({
+      clientId: 'client-123',
+      redirectUri: REDIRECT,
+      storage,
+      fetch: fake.fetch,
+      now: () => now,
+      onTokenStored: (token, previous) => stored.push([token.refreshToken as string, previous?.refreshToken]),
+    });
+    await signIn(auth);
+    now += 3600 * 1000;
+    await auth.getAccessToken();
+    expect(stored).toEqual([
+      ['rt', undefined],
+      ['rt2', 'rt'],
+    ]);
+  });
+
   it('records the granted scopes and keeps them when a refresh leaves them out', async () => {
     let n = 0;
     const { auth, advance } = setup(() =>

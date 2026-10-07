@@ -4,14 +4,15 @@
 // The same class over localStorage (`browserCache()`) keeps the slow MusicBrainz
 // genre lookups across tabs; signing out clears both.
 
-const PREFIX = 'curator.cache.v1.';
+/** Every cached entry's storage key starts with this. */
+export const CACHE_PREFIX = 'curator.cache.v1.';
 
 export class SessionCache {
   constructor(private readonly storage: Storage | null = safeSessionStorage()) {}
 
   get<T>(key: string): T | null {
     try {
-      const raw = this.storage?.getItem(PREFIX + key);
+      const raw = this.storage?.getItem(CACHE_PREFIX + key);
       return raw ? (JSON.parse(raw) as T) : null;
     } catch {
       return null;
@@ -20,7 +21,7 @@ export class SessionCache {
 
   set(key: string, value: unknown): void {
     try {
-      this.storage?.setItem(PREFIX + key, JSON.stringify(value));
+      this.storage?.setItem(CACHE_PREFIX + key, JSON.stringify(value));
     } catch {
       // Quota exceeded or storage disabled: the data just is not cached.
     }
@@ -32,7 +33,7 @@ export class SessionCache {
       const keys: string[] = [];
       for (let i = 0; i < this.storage.length; i++) {
         const key = this.storage.key(i);
-        if (key?.startsWith(PREFIX)) keys.push(key);
+        if (key?.startsWith(CACHE_PREFIX)) keys.push(key);
       }
       for (const key of keys) this.storage.removeItem(key);
     } catch {
