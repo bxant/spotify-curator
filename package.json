@@ -16,8 +16,10 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.63.0",
     "typescript": "~5.9.3",
     "vite": "^8.0.0",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.0",
+    "wrangler": "^4.148.0"
   }
 }
